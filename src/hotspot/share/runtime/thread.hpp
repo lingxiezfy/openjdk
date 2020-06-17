@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -48,6 +48,7 @@
 #include "runtime/unhandledOops.hpp"
 #include "utilities/align.hpp"
 #include "utilities/exceptions.hpp"
+#include "utilities/globalDefinitions.hpp"
 #include "utilities/macros.hpp"
 #ifdef ZERO
 # include "stack_zero.hpp"
@@ -62,6 +63,7 @@ class ThreadSafepointState;
 class ThreadsList;
 class ThreadsSMRSupport;
 
+class JvmtiRawMonitor;
 class JvmtiThreadState;
 class ThreadStatistics;
 class ConcurrentLocksDump;
@@ -142,7 +144,7 @@ class Thread: public ThreadShadow {
 
 #ifndef USE_LIBRARY_BASED_TLS_ONLY
   // Current thread is maintained as a thread-local variable
-  static THREAD_LOCAL_DECL Thread* _thr_current;
+  static THREAD_LOCAL Thread* _thr_current;
 #endif
 
   // Thread local data area available to the GC. The internal
@@ -404,17 +406,20 @@ class Thread: public ThreadShadow {
   ObjectMonitor* _current_pending_monitor;      // ObjectMonitor this thread
                                                 // is waiting to lock
   bool _current_pending_monitor_is_from_java;   // locking is from Java code
+  JvmtiRawMonitor* _current_pending_raw_monitor; // JvmtiRawMonitor this thread
+                                                 // is waiting to lock
+
 
   // ObjectMonitor on which this thread called Object.wait()
   ObjectMonitor* _current_waiting_monitor;
 
-  // Private thread-local objectmonitor list - a simple cache organized as a SLL.
+  // Per-thread ObjectMonitor lists:
  public:
-  ObjectMonitor* omFreeList;
-  int omFreeCount;                              // length of omFreeList
-  int omFreeProvision;                          // reload chunk size
-  ObjectMonitor* omInUseList;                   // SLL to track monitors in circulation
-  int omInUseCount;                             // length of omInUseList
+  ObjectMonitor* om_free_list;                  // SLL of free ObjectMonitors
+  int om_free_count;                            // # on om_free_list
+  int om_free_provision;                        // # to try to allocate next
+  ObjectMonitor* om_in_use_list;                // SLL of in-use ObjectMonitors
+  int om_in_use_count;                          // # on om_in_use_list
 
 #ifdef ASSERT
  private:
@@ -476,6 +481,7 @@ class Thread: public ThreadShadow {
   virtual bool is_Java_thread()     const            { return false; }
   virtual bool is_Compiler_thread() const            { return false; }
   virtual bool is_Code_cache_sweeper_thread() const  { return false; }
+  virtual bool is_service_thread() const             { return false; }
   virtual bool is_hidden_from_external_view() const  { return false; }
   virtual bool is_jvmti_agent_thread() const         { return false; }
   // True iff the thread can perform GC operations at a safepoint.
@@ -514,15 +520,12 @@ class Thread: public ThreadShadow {
   static void set_priority(Thread* thread, ThreadPriority priority);
   static ThreadPriority get_priority(const Thread* const thread);
   static void start(Thread* thread);
-  static void interrupt(Thread* thr);
-  static bool is_interrupted(Thread* thr, bool clear_interrupted);
 
   void set_native_thread_name(const char *name) {
     assert(Thread::current() == this, "set_native_thread_name can only be called on the current thread");
     os::set_native_thread_name(name);
   }
 
-  ObjectMonitor** omInUseList_addr()             { return (ObjectMonitor **)&omInUseList; }
   Monitor* SR_lock() const                       { return _SR_lock; }
 
   bool has_async_exception() const { return (_suspend_flags & _has_async_exception) != 0; }
@@ -642,6 +645,14 @@ class Thread: public ThreadShadow {
     _current_waiting_monitor = monitor;
   }
 
+  // For tracking the Jvmti raw monitor the thread is pending on.
+  JvmtiRawMonitor* current_pending_raw_monitor() {
+    return _current_pending_raw_monitor;
+  }
+  void set_current_pending_raw_monitor(JvmtiRawMonitor* monitor) {
+    _current_pending_raw_monitor = monitor;
+  }
+
   // GC support
   // Apply "f->do_oop" to all root oops in "this".
   //   Used by JavaThread::oops_do.
@@ -673,15 +684,51 @@ class Thread: public ThreadShadow {
   // jvmtiRedefineClasses support
   void metadata_handles_do(void f(Metadata*));
 
+ private:
+  // Check if address is within the given range of this thread's
+  // stack:  stack_base() > adr >/>= limit
+  // The check is inclusive of limit if passed true, else exclusive.
+  bool is_in_stack_range(address adr, address limit, bool inclusive) const {
+    assert(stack_base() > limit && limit >= stack_end(), "limit is outside of stack");
+    return stack_base() > adr && (inclusive ? adr >= limit : adr > limit);
+  }
+
+ public:
   // Used by fast lock support
   virtual bool is_lock_owned(address adr) const;
 
-  // Check if address is in the stack of the thread (not just for locks).
-  // Warning: the method can only be used on the running thread
-  bool is_in_stack(address adr) const;
-  // Check if address is in the usable part of the stack (excludes protected
-  // guard pages)
-  bool is_in_usable_stack(address adr) const;
+  // Check if address is within the given range of this thread's
+  // stack:  stack_base() > adr >= limit
+  bool is_in_stack_range_incl(address adr, address limit) const {
+    return is_in_stack_range(adr, limit, true);
+  }
+
+  // Check if address is within the given range of this thread's
+  // stack:  stack_base() > adr > limit
+  bool is_in_stack_range_excl(address adr, address limit) const {
+    return is_in_stack_range(adr, limit, false);
+  }
+
+  // Check if address is in the stack mapped to this thread. Used mainly in
+  // error reporting (so has to include guard zone) and frame printing.
+  // Expects _stack_base to be initialized - checked with assert.
+  bool is_in_full_stack_checked(address adr) const {
+    return is_in_stack_range_incl(adr, stack_end());
+  }
+
+  // Like is_in_full_stack_checked but without the assertions as this
+  // may be called in a thread before _stack_base is initialized.
+  bool is_in_full_stack(address adr) const {
+    address stack_end = _stack_base - _stack_size;
+    return _stack_base > adr && adr >= stack_end;
+  }
+
+  // Check if address is in the live stack of this thread (not just for locks).
+  // Warning: can only be called by the current thread on itself.
+  bool is_in_live_stack(address adr) const {
+    assert(Thread::current() == this, "is_in_live_stack can only be called from current thread");
+    return is_in_stack_range_incl(adr, os::current_stack_pointer());
+  }
 
   // Sets this thread as starting thread. Returns failure if thread
   // creation fails due to lack of memory, too many threads etc.
@@ -717,11 +764,6 @@ protected:
   void    record_stack_base_and_size();
   void    register_thread_stack_with_NMT() NOT_NMT_RETURN;
 
-  bool    on_local_stack(address adr) const {
-    // QQQ this has knowledge of direction, ought to be a stack method
-    return (_stack_base >= adr && adr >= stack_end());
-  }
-
   int     lgrp_id() const        { return _lgrp_id; }
   void    set_lgrp_id(int value) { _lgrp_id = value; }
 
@@ -755,7 +797,7 @@ protected:
 
   // These functions check conditions on a JavaThread before possibly going to a safepoint,
   // including NoSafepointVerifier.
-  void check_for_valid_safepoint_state(bool potential_vm_operation) NOT_DEBUG_RETURN;
+  void check_for_valid_safepoint_state() NOT_DEBUG_RETURN;
   void check_possible_safepoint() NOT_DEBUG_RETURN;
 
  private:
@@ -788,8 +830,7 @@ protected:
  public:
   volatile intptr_t _Stalled;
   volatile int _TypeTag;
-  ParkEvent * _ParkEvent;                     // for synchronized()
-  ParkEvent * _SleepEvent;                    // for Thread.sleep
+  ParkEvent * _ParkEvent;                     // for Object monitors and JVMTI raw monitors
   ParkEvent * _MuxEvent;                      // for low-level muxAcquire-muxRelease
   int NativeSyncRecursion;                    // diagnostic
 
@@ -805,7 +846,6 @@ protected:
   static void SpinAcquire(volatile int * Lock, const char * Name);
   static void SpinRelease(volatile int * Lock);
   static void muxAcquire(volatile intptr_t * Lock, const char * Name);
-  static void muxAcquireW(volatile intptr_t * Lock, ParkEvent * ev);
   static void muxRelease(volatile intptr_t * Lock);
 };
 
@@ -866,9 +906,7 @@ class NonJavaThread::Iterator : public StackObj {
   uint _protect_enter;
   NonJavaThread* _current;
 
-  // Noncopyable.
-  Iterator(const Iterator&);
-  Iterator& operator=(const Iterator&);
+  NONCOPYABLE(Iterator);
 
 public:
   Iterator();
@@ -979,6 +1017,7 @@ class JavaThread: public Thread {
   friend class VMStructs;
   friend class JVMCIVMStructs;
   friend class WhiteBox;
+  friend class ThreadsSMRSupport; // to access _threadObj for exiting_threads_oops_do
  private:
   bool           _on_thread_list;                // Is set when this JavaThread is added to the Threads list
   oop            _threadObj;                     // The Java level thread object
@@ -1147,10 +1186,8 @@ class JavaThread: public Thread {
  public:
   static jlong* _jvmci_old_thread_counters;
   static void collect_counters(jlong* array, int length);
-
-  bool resize_counters(int current_size, int new_size);
-
-  static bool resize_all_jvmci_counters(int new_size);
+  void resize_counters(int current_size, int new_size);
+  static void resize_all_jvmci_counters(int new_size);
 
  private:
 #endif // INCLUDE_JVMCI
@@ -1312,7 +1349,7 @@ class JavaThread: public Thread {
   HandshakeState _handshake;
  public:
   void set_handshake_operation(HandshakeOperation* op) {
-    _handshake.set_operation(this, op);
+    _handshake.set_operation(op);
   }
 
   bool has_handshake() const {
@@ -1320,12 +1357,18 @@ class JavaThread: public Thread {
   }
 
   void handshake_process_by_self() {
-    _handshake.process_by_self(this);
+    _handshake.process_by_self();
   }
 
-  void handshake_process_by_vmthread() {
-    _handshake.process_by_vmthread(this);
+  HandshakeState::ProcessResult handshake_try_process(HandshakeOperation* op) {
+    return _handshake.try_process(op);
   }
+
+#ifdef ASSERT
+  Thread* active_handshaker() const {
+    return _handshake.active_handshaker();
+  }
+#endif
 
   // Suspend/resume support for JavaThread
  private:
@@ -1531,12 +1574,12 @@ class JavaThread: public Thread {
 #endif // INCLUDE_JVMCI
 
   // Exception handling for compiled methods
-  oop      exception_oop() const                 { return _exception_oop; }
+  oop      exception_oop() const;
   address  exception_pc() const                  { return _exception_pc; }
   address  exception_handler_pc() const          { return _exception_handler_pc; }
   bool     is_method_handle_return() const       { return _is_method_handle_return == 1; }
 
-  void set_exception_oop(oop o)                  { (void)const_cast<oop&>(_exception_oop = o); }
+  void set_exception_oop(oop o);
   void set_exception_pc(address a)               { _exception_pc = a; }
   void set_exception_handler_pc(address a)       { _exception_handler_pc = a; }
   void set_is_method_handle_return(bool value)   { _is_method_handle_return = value ? 1 : 0; }
@@ -1640,7 +1683,7 @@ class JavaThread: public Thread {
     assert(_stack_reserved_zone_size == 0, "This should be called only once.");
     _stack_reserved_zone_size = s;
   }
-  address stack_reserved_zone_base() {
+  address stack_reserved_zone_base() const {
     return (address)(stack_end() +
                      (stack_red_zone_size() + stack_yellow_zone_size() + stack_reserved_zone_size()));
   }
@@ -1719,6 +1762,13 @@ class JavaThread: public Thread {
   void set_stack_overflow_limit() {
     _stack_overflow_limit =
       stack_end() + MAX2(JavaThread::stack_guard_zone_size(), JavaThread::stack_shadow_zone_size());
+  }
+
+  // Check if address is in the usable part of the stack (excludes protected
+  // guard pages). Can be applied to any thread and is an approximation for
+  // using is_in_live_stack when the query has to happen from another thread.
+  bool is_in_usable_stack(address adr) const {
+    return is_in_stack_range_incl(adr, stack_reserved_zone_base());
   }
 
   // Misc. accessors/mutators
@@ -1889,7 +1939,7 @@ class JavaThread: public Thread {
   void deoptimize();
   void make_zombies();
 
-  void deoptimized_wrt_marked_nmethods();
+  void deoptimize_marked_methods();
 
  public:
   // Returns the running thread as a JavaThread
@@ -1982,9 +2032,11 @@ class JavaThread: public Thread {
 
   // Used by the interpreter in fullspeed mode for frame pop, method
   // entry, method exit and single stepping support. This field is
-  // only set to non-zero by the VM_EnterInterpOnlyMode VM operation.
-  // It can be set to zero asynchronously (i.e., without a VM operation
-  // or a lock) so we have to be very careful.
+  // only set to non-zero at a safepoint or using a direct handshake
+  // (see EnterInterpOnlyModeClosure).
+  // It can be set to zero asynchronously to this threads execution (i.e., without
+  // safepoint/handshake or a lock) so we have to be very careful.
+  // Accesses by other threads are synchronized using JvmtiThreadState_lock though.
   int               _interp_only_mode;
 
  public:
@@ -2054,6 +2106,15 @@ class JavaThread: public Thread {
 
 private:
   InstanceKlass* _class_to_be_initialized;
+
+  // java.lang.Thread.sleep support
+  ParkEvent * _SleepEvent;
+public:
+  bool sleep(jlong millis);
+
+  // java.lang.Thread interruption support
+  void interrupt();
+  bool is_interrupted(bool clear_interrupted);
 
 };
 
@@ -2268,13 +2329,6 @@ class Threads: AllStatic {
   static void deoptimized_wrt_marked_nmethods();
 
   struct Test;                  // For private gtest access.
-};
-
-
-// Thread iterator
-class ThreadClosure: public StackObj {
- public:
-  virtual void do_thread(Thread* thread) = 0;
 };
 
 class SignalHandlerMark: public StackObj {

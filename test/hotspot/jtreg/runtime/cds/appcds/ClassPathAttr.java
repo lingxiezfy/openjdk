@@ -27,8 +27,7 @@
  * @summary Class-Path: attribute in MANIFEST file
  * @requires vm.cds
  * @library /test/lib
- * @modules jdk.jartool/sun.tools.jar
- * @run driver ClassPathAttr
+ * @run driver/timeout=240 ClassPathAttr
  */
 
 import jdk.test.lib.process.OutputAnalyzer;

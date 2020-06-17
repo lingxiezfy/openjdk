@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2012, 2018 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -34,6 +34,7 @@
 #include "runtime/frame.inline.hpp"
 #include "runtime/safepointMechanism.hpp"
 #include "runtime/sharedRuntime.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 // Implementation of InterpreterMacroAssembler.
 
@@ -217,7 +218,7 @@ void InterpreterMacroAssembler::dispatch_Lbyte_code(TosState state, Register byt
   // Calc dispatch table address.
   load_dispatch_table(R11_scratch1, table);
 
-  if (SafepointMechanism::uses_thread_local_poll() && generate_poll) {
+  if (generate_poll) {
     address *sfpt_tbl = Interpreter::safept_table(state);
     if (table != sfpt_tbl) {
       Label dispatch;
@@ -489,7 +490,7 @@ void InterpreterMacroAssembler::load_resolved_reference_at_index(Register result
   sldi(R0, R0, LogBytesPerHeapOop);
   cmpd(CCR0, tmp, R0);
   blt(CCR0, index_ok);
-  stop("resolved reference index out of bounds", 0x09256);
+  stop("resolved reference index out of bounds");
   bind(index_ok);
 #endif
   // Add in the index.
@@ -883,7 +884,7 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
     //
     // markWord displaced_header = obj->mark().set_unlocked();
     // monitor->lock()->set_displaced_header(displaced_header);
-    // if (Atomic::cmpxchg(/*ex=*/monitor, /*addr*/obj->mark_addr(), /*cmp*/displaced_header) == displaced_header) {
+    // if (Atomic::cmpxchg(/*addr*/obj->mark_addr(), /*cmp*/displaced_header, /*ex=*/monitor) == displaced_header) {
     //   // We stored the monitor address into the object's mark word.
     // } else if (THREAD->is_lock_owned((address)displaced_header))
     //   // Simple recursive case.
@@ -921,7 +922,7 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
     std(displaced_header, BasicObjectLock::lock_offset_in_bytes() +
         BasicLock::displaced_header_offset_in_bytes(), monitor);
 
-    // if (Atomic::cmpxchg(/*ex=*/monitor, /*addr*/obj->mark_addr(), /*cmp*/displaced_header) == displaced_header) {
+    // if (Atomic::cmpxchg(/*addr*/obj->mark_addr(), /*cmp*/displaced_header, /*ex=*/monitor) == displaced_header) {
 
     // Store stack address of the BasicObjectLock (this is monitor) into object.
     addi(object_mark_addr, object, oopDesc::mark_offset_in_bytes());
@@ -997,7 +998,7 @@ void InterpreterMacroAssembler::unlock_object(Register monitor, bool check_for_e
     // if ((displaced_header = monitor->displaced_header()) == NULL) {
     //   // Recursive unlock. Mark the monitor unlocked by setting the object field to NULL.
     //   monitor->set_obj(NULL);
-    // } else if (Atomic::cmpxchg(displaced_header, obj->mark_addr(), monitor) == monitor) {
+    // } else if (Atomic::cmpxchg(obj->mark_addr(), monitor, displaced_header) == monitor) {
     //   // We swapped the unlocked mark in displaced_header into the object's mark word.
     //   monitor->set_obj(NULL);
     // } else {
@@ -1030,7 +1031,7 @@ void InterpreterMacroAssembler::unlock_object(Register monitor, bool check_for_e
     cmpdi(CCR0, displaced_header, 0);
     beq(CCR0, free_slot); // recursive unlock
 
-    // } else if (Atomic::cmpxchg(displaced_header, obj->mark_addr(), monitor) == monitor) {
+    // } else if (Atomic::cmpxchg(obj->mark_addr(), monitor, displaced_header) == monitor) {
     //   // We swapped the unlocked mark in displaced_header into the object's mark word.
     //   monitor->set_obj(NULL);
 
@@ -1142,7 +1143,7 @@ void InterpreterMacroAssembler::call_from_interpreter(Register Rtarget_method, R
 #ifdef ASSERT
   ld(Rscratch1, _ijava_state_neg(top_frame_sp), Rscratch2); // Rscratch2 contains fp
   cmpd(CCR0, R21_sender_SP, Rscratch1);
-  asm_assert_eq("top_frame_sp incorrect", 0x951);
+  asm_assert_eq("top_frame_sp incorrect");
 #endif
 
   bctr();
@@ -2250,7 +2251,7 @@ void InterpreterMacroAssembler::restore_interpreter_state(Register scratch, bool
     subf(R0, R1_SP, scratch);
     cmpdi(CCR0, R0, frame::abi_reg_args_size + frame::ijava_state_size);
     bge(CCR0, Lok);
-    stop("frame too small (restore istate)", 0x5432);
+    stop("frame too small (restore istate)");
     bind(Lok);
   }
 #endif
@@ -2313,7 +2314,7 @@ void InterpreterMacroAssembler::increment_invocation_counter(Register Rcounters,
 }
 
 void InterpreterMacroAssembler::verify_oop(Register reg, TosState state) {
-  if (state == atos) { MacroAssembler::verify_oop(reg); }
+  if (state == atos) { MacroAssembler::verify_oop(reg, FILE_AND_LINE); }
 }
 
 // Local helper function for the verify_oop_or_return_address macro.

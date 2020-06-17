@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -48,10 +48,8 @@
 #include "utilities/align.hpp"
 #include "utilities/copy.hpp"
 #include "utilities/macros.hpp"
+#include "utilities/powerOfTwo.hpp"
 #include "utilities/vmError.hpp"
-#if INCLUDE_ZGC
-#include "gc/z/c2/zBarrierSetC2.hpp"
-#endif
 
 // Portions of code courtesy of Clifford Click
 
@@ -210,7 +208,7 @@ Node *MemNode::optimize_memory_chain(Node *mchain, const TypePtr *t_adr, Node *l
   Node* result = optimize_simple_memory_chain(mchain, t_oop, load, phase);
   bool is_instance = t_oop->is_known_instance_field();
   PhaseIterGVN *igvn = phase->is_IterGVN();
-  if (is_instance && igvn != NULL  && result->is_Phi()) {
+  if (is_instance && igvn != NULL && result->is_Phi()) {
     PhiNode *mphi = result->as_Phi();
     assert(mphi->bottom_type() == Type::MEMORY, "memory phi required");
     const TypePtr *t = mphi->adr_type();
@@ -342,7 +340,7 @@ Node *MemNode::Ideal_common(PhaseGVN *phase, bool can_reshape) {
       }
     }
     Node* frame = igvn->transform(new ParmNode(phase->C->start(), TypeFunc::FramePtr));
-    Node* halt = igvn->transform(new HaltNode(ctl, frame));
+    Node* halt = igvn->transform(new HaltNode(ctl, frame, "unsafe off-heap access with zero address"));
     phase->C->root()->add_req(halt);
     return this;
   }
@@ -540,8 +538,7 @@ Node* LoadNode::find_previous_arraycopy(PhaseTransform* phase, Node* ld_alloc, N
         mb->in(0)->in(0) != NULL && mb->in(0)->in(0)->is_ArrayCopy()) {
       ArrayCopyNode* ac = mb->in(0)->in(0)->as_ArrayCopy();
       if (ac->is_clonebasic()) {
-        intptr_t offset;
-        AllocateNode* alloc = AllocateNode::Ideal_allocation(ac->in(ArrayCopyNode::Dest), phase, offset);
+        AllocateNode* alloc = AllocateNode::Ideal_allocation(ac->in(ArrayCopyNode::Dest), phase);
         if (alloc != NULL && alloc == ld_alloc) {
           return ac;
         }
@@ -739,9 +736,7 @@ Node* MemNode::find_previous_store(PhaseTransform* phase) {
 // Also, asserts a cross-check of the type against the expected address type.
 const TypePtr* MemNode::calculate_adr_type(const Type* t, const TypePtr* cross_check) {
   if (t == Type::TOP)  return NULL; // does not touch memory any more?
-  #ifdef PRODUCT
-  cross_check = NULL;
-  #else
+  #ifdef ASSERT
   if (!VerifyAliases || VMError::is_error_reported() || Node::in_dump())  cross_check = NULL;
   #endif
   const TypePtr* tp = t->isa_ptr();
@@ -811,7 +806,7 @@ bool LoadNode::is_immutable_value(Node* adr) {
 //----------------------------LoadNode::make-----------------------------------
 // Polymorphic factory method:
 Node *LoadNode::make(PhaseGVN& gvn, Node *ctl, Node *mem, Node *adr, const TypePtr* adr_type, const Type *rt, BasicType bt, MemOrd mo,
-                     ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe) {
+                     ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe, uint8_t barrier_data) {
   Compile* C = gvn.C;
 
   // sanity check the alias category against the created node type
@@ -862,6 +857,7 @@ Node *LoadNode::make(PhaseGVN& gvn, Node *ctl, Node *mem, Node *adr, const TypeP
   if (unsafe) {
     load->set_unsafe_access();
   }
+  load->set_barrier_data(barrier_data);
   if (load->Opcode() == Op_LoadN) {
     Node* ld = gvn.transform(load);
     return new DecodeNNode(ld, ld->bottom_type()->make_ptr());
@@ -871,7 +867,7 @@ Node *LoadNode::make(PhaseGVN& gvn, Node *ctl, Node *mem, Node *adr, const TypeP
 }
 
 LoadLNode* LoadLNode::make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr* adr_type, const Type* rt, MemOrd mo,
-                                  ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe) {
+                                  ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe, uint8_t barrier_data) {
   bool require_atomic = true;
   LoadLNode* load = new LoadLNode(ctl, mem, adr, adr_type, rt->is_long(), mo, control_dependency, require_atomic);
   if (unaligned) {
@@ -883,11 +879,12 @@ LoadLNode* LoadLNode::make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr
   if (unsafe) {
     load->set_unsafe_access();
   }
+  load->set_barrier_data(barrier_data);
   return load;
 }
 
 LoadDNode* LoadDNode::make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr* adr_type, const Type* rt, MemOrd mo,
-                                  ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe) {
+                                  ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe, uint8_t barrier_data) {
   bool require_atomic = true;
   LoadDNode* load = new LoadDNode(ctl, mem, adr, adr_type, rt, mo, control_dependency, require_atomic);
   if (unaligned) {
@@ -899,6 +896,7 @@ LoadDNode* LoadDNode::make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr
   if (unsafe) {
     load->set_unsafe_access();
   }
+  load->set_barrier_data(barrier_data);
   return load;
 }
 
@@ -947,12 +945,11 @@ Node* LoadNode::can_see_arraycopy_value(Node* st, PhaseGVN* phase) const {
     if (ac->as_ArrayCopy()->is_clonebasic()) {
       assert(ld_alloc != NULL, "need an alloc");
       assert(addp->is_AddP(), "address must be addp");
-      assert(ac->in(ArrayCopyNode::Dest)->is_AddP(), "dest must be an address");
       BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
-      assert(bs->step_over_gc_barrier(addp->in(AddPNode::Base)) == bs->step_over_gc_barrier(ac->in(ArrayCopyNode::Dest)->in(AddPNode::Base)), "strange pattern");
-      assert(bs->step_over_gc_barrier(addp->in(AddPNode::Address)) == bs->step_over_gc_barrier(ac->in(ArrayCopyNode::Dest)->in(AddPNode::Address)), "strange pattern");
-      addp->set_req(AddPNode::Base, src->in(AddPNode::Base));
-      addp->set_req(AddPNode::Address, src->in(AddPNode::Address));
+      assert(bs->step_over_gc_barrier(addp->in(AddPNode::Base)) == bs->step_over_gc_barrier(ac->in(ArrayCopyNode::Dest)), "strange pattern");
+      assert(bs->step_over_gc_barrier(addp->in(AddPNode::Address)) == bs->step_over_gc_barrier(ac->in(ArrayCopyNode::Dest)), "strange pattern");
+      addp->set_req(AddPNode::Base, src);
+      addp->set_req(AddPNode::Address, src);
     } else {
       assert(ac->as_ArrayCopy()->is_arraycopy_validated() ||
              ac->as_ArrayCopy()->is_copyof_validated() ||
@@ -1440,8 +1437,9 @@ Node *LoadNode::split_through_phi(PhaseGVN *phase) {
 
   // Do nothing here if Identity will find a value
   // (to avoid infinite chain of value phis generation).
-  if (!phase->eqv(this, phase->apply_identity(this)))
+  if (!phase->eqv(this, this->Identity(phase))) {
     return NULL;
+  }
 
   // Select Region to split through.
   Node* region;
@@ -1484,14 +1482,20 @@ Node *LoadNode::split_through_phi(PhaseGVN *phase) {
   for (uint i = 1; i < region->req(); i++) {
     Node* x;
     Node* the_clone = NULL;
-    if (region->in(i) == C->top()) {
+    Node* in = region->in(i);
+    if (region->is_CountedLoop() && region->as_Loop()->is_strip_mined() && i == LoopNode::EntryControl &&
+        in != NULL && in->is_OuterStripMinedLoop()) {
+      // No node should go in the outer strip mined loop
+      in = in->in(LoopNode::EntryControl);
+    }
+    if (in == NULL || in == C->top()) {
       x = C->top();      // Dead path?  Use a dead data op
     } else {
       x = this->clone();        // Else clone up the data op
       the_clone = x;            // Remember for possible deletion.
       // Alter data node to use pre-phi inputs
       if (this->in(0) == region) {
-        x->set_req(0, region->in(i));
+        x->set_req(0, in);
       } else {
         x->set_req(0, NULL);
       }
@@ -1530,7 +1534,7 @@ Node *LoadNode::split_through_phi(PhaseGVN *phase) {
       // otherwise it will be not updated during igvn->transform since
       // igvn->type(x) is set to x->Value() already.
       x->raise_bottom_type(t);
-      Node *y = igvn->apply_identity(x);
+      Node* y = x->Identity(igvn);
       if (y != x) {
         x = y;
       } else {
@@ -1554,6 +1558,22 @@ Node *LoadNode::split_through_phi(PhaseGVN *phase) {
   igvn->register_new_node_with_optimizer(phi);
   return phi;
 }
+
+AllocateNode* LoadNode::is_new_object_mark_load(PhaseGVN *phase) const {
+  if (Opcode() == Op_LoadX) {
+    Node* address = in(MemNode::Address);
+    AllocateNode* alloc = AllocateNode::Ideal_allocation(address, phase);
+    Node* mem = in(MemNode::Memory);
+    if (alloc != NULL && mem->is_Proj() &&
+        mem->in(0) != NULL &&
+        mem->in(0) == alloc->initialization() &&
+        alloc->initialization()->proj_out_or_null(0) != NULL) {
+      return alloc;
+    }
+  }
+  return NULL;
+}
+
 
 //------------------------------Ideal------------------------------------------
 // If the load is from Field memory and the pointer is non-null, it might be possible to
@@ -1681,6 +1701,13 @@ Node *LoadNode::Ideal(PhaseGVN *phase, bool can_reshape) {
       set_req(MemNode::Memory, prev_mem);
       return this;
     }
+  }
+
+  AllocateNode* alloc = is_new_object_mark_load(phase);
+  if (alloc != NULL && alloc->Opcode() == Op_Allocate && UseBiasedLocking) {
+    InitializeNode* init = alloc->initialization();
+    Node* control = init->proj_out(0);
+    return alloc->make_ideal_mark(phase, address, control, mem);
   }
 
   return progress ? this : NULL;
@@ -1941,6 +1968,12 @@ const Type* LoadNode::Value(PhaseGVN* phase) const {
       return Type::get_zero_type(_type->basic_type());
     }
   }
+
+  Node* alloc = is_new_object_mark_load(phase);
+  if (alloc != NULL && !(alloc->Opcode() == Op_Allocate && UseBiasedLocking)) {
+    return TypeX::make(markWord::prototype().value());
+  }
+
   return _type;
 }
 
@@ -2120,15 +2153,15 @@ const Type* LoadNode::klass_value_common(PhaseGVN* phase) const {
     ciInstanceKlass* ik = tinst->klass()->as_instance_klass();
     int offset = tinst->offset();
     if (ik == phase->C->env()->Class_klass()
-        && (offset == java_lang_Class::klass_offset_in_bytes() ||
-            offset == java_lang_Class::array_klass_offset_in_bytes())) {
+        && (offset == java_lang_Class::klass_offset() ||
+            offset == java_lang_Class::array_klass_offset())) {
       // We are loading a special hidden field from a Class mirror object,
       // the field which points to the VM's Klass metaobject.
       ciType* t = tinst->java_mirror_type();
       // java_mirror_type returns non-null for compile-time Class constants.
       if (t != NULL) {
         // constant oop => constant klass
-        if (offset == java_lang_Class::array_klass_offset_in_bytes()) {
+        if (offset == java_lang_Class::array_klass_offset()) {
           if (t->is_void()) {
             // We cannot create a void array.  Since void is a primitive type return null
             // klass.  Users of this result need to do a null check on the returned klass.
@@ -2281,7 +2314,7 @@ Node* LoadNode::klass_identity_common(PhaseGVN* phase) {
   // introducing a new debug info operator for Klass.java_mirror).
 
   if (toop->isa_instptr() && toop->klass() == phase->C->env()->Class_klass()
-      && offset == java_lang_Class::klass_offset_in_bytes()) {
+      && offset == java_lang_Class::klass_offset()) {
     if (base->is_Load()) {
       Node* base2 = base->in(MemNode::Address);
       if (base2->is_Load()) { /* direct load of a load which is the OopHandle */
@@ -2822,7 +2855,7 @@ LoadStoreNode::LoadStoreNode( Node *c, Node *mem, Node *adr, Node *val, const Ty
   : Node(required),
     _type(rt),
     _adr_type(at),
-    _has_barrier(false)
+    _barrier(0)
 {
   init_req(MemNode::Control, c  );
   init_req(MemNode::Memory , mem);
@@ -3508,37 +3541,51 @@ intptr_t InitializeNode::get_store_offset(Node* st, PhaseTransform* phase) {
 // within the initialization without creating a vicious cycle, such as:
 //     { Foo p = new Foo(); p.next = p; }
 // True for constants and parameters and small combinations thereof.
-bool InitializeNode::detect_init_independence(Node* n, int& count) {
-  if (n == NULL)      return true;   // (can this really happen?)
-  if (n->is_Proj())   n = n->in(0);
-  if (n == this)      return false;  // found a cycle
-  if (n->is_Con())    return true;
-  if (n->is_Start())  return true;   // params, etc., are OK
-  if (n->is_Root())   return true;   // even better
+bool InitializeNode::detect_init_independence(Node* value, PhaseGVN* phase) {
+  ResourceMark rm;
+  Unique_Node_List worklist;
+  worklist.push(value);
 
-  Node* ctl = n->in(0);
-  if (ctl != NULL && !ctl->is_top()) {
-    if (ctl->is_Proj())  ctl = ctl->in(0);
-    if (ctl == this)  return false;
+  uint complexity_limit = 20;
+  for (uint j = 0; j < worklist.size(); j++) {
+    if (j >= complexity_limit) {
+      return false;  // Bail out if processed too many nodes
+    }
 
-    // If we already know that the enclosing memory op is pinned right after
-    // the init, then any control flow that the store has picked up
-    // must have preceded the init, or else be equal to the init.
-    // Even after loop optimizations (which might change control edges)
-    // a store is never pinned *before* the availability of its inputs.
-    if (!MemNode::all_controls_dominate(n, this))
-      return false;                  // failed to prove a good control
-  }
+    Node* n = worklist.at(j);
+    if (n == NULL)      continue;   // (can this really happen?)
+    if (n->is_Proj())   n = n->in(0);
+    if (n == this)      return false;  // found a cycle
+    if (n->is_Con())    continue;
+    if (n->is_Start())  continue;   // params, etc., are OK
+    if (n->is_Root())   continue;   // even better
 
-  // Check data edges for possible dependencies on 'this'.
-  if ((count += 1) > 20)  return false;  // complexity limit
-  for (uint i = 1; i < n->req(); i++) {
-    Node* m = n->in(i);
-    if (m == NULL || m == n || m->is_top())  continue;
-    uint first_i = n->find_edge(m);
-    if (i != first_i)  continue;  // process duplicate edge just once
-    if (!detect_init_independence(m, count)) {
-      return false;
+    // There cannot be any dependency if 'n' is a CFG node that dominates the current allocation
+    if (n->is_CFG() && phase->is_dominator(n, allocation())) {
+      continue;
+    }
+
+    Node* ctl = n->in(0);
+    if (ctl != NULL && !ctl->is_top()) {
+      if (ctl->is_Proj())  ctl = ctl->in(0);
+      if (ctl == this)  return false;
+
+      // If we already know that the enclosing memory op is pinned right after
+      // the init, then any control flow that the store has picked up
+      // must have preceded the init, or else be equal to the init.
+      // Even after loop optimizations (which might change control edges)
+      // a store is never pinned *before* the availability of its inputs.
+      if (!MemNode::all_controls_dominate(n, this))
+        return false;                  // failed to prove a good control
+    }
+
+    // Check data edges for possible dependencies on 'this'.
+    for (uint i = 1; i < n->req(); i++) {
+      Node* m = n->in(i);
+      if (m == NULL || m == n || m->is_top())  continue;
+
+      // Only process data inputs once
+      worklist.push(m);
     }
   }
 
@@ -3549,7 +3596,7 @@ bool InitializeNode::detect_init_independence(Node* n, int& count) {
 // an initialization.  Returns zero if a check fails.
 // On success, returns the (constant) offset to which the store applies,
 // within the initialized memory.
-intptr_t InitializeNode::can_capture_store(StoreNode* st, PhaseTransform* phase, bool can_reshape) {
+intptr_t InitializeNode::can_capture_store(StoreNode* st, PhaseGVN* phase, bool can_reshape) {
   const int FAIL = 0;
   if (st->req() != MemNode::ValueIn + 1)
     return FAIL;                // an inscrutable StoreNode (card mark?)
@@ -3571,8 +3618,8 @@ intptr_t InitializeNode::can_capture_store(StoreNode* st, PhaseTransform* phase,
     return FAIL;                // mismatched access
   }
   Node* val = st->in(MemNode::ValueIn);
-  int complexity_count = 0;
-  if (!detect_init_independence(val, complexity_count))
+
+  if (!detect_init_independence(val, phase))
     return FAIL;                // stored value must be 'simple enough'
 
   // The Store can be captured only if nothing after the allocation
@@ -3770,7 +3817,7 @@ Node* InitializeNode::make_raw_address(intptr_t offset,
 //                      rawstore1 rawstore2)
 //
 Node* InitializeNode::capture_store(StoreNode* st, intptr_t start,
-                                    PhaseTransform* phase, bool can_reshape) {
+                                    PhaseGVN* phase, bool can_reshape) {
   assert(stores_are_sane(phase), "");
 
   if (start < 0)  return NULL;
@@ -4128,7 +4175,7 @@ intptr_t InitializeNode::find_next_fullword_store(uint start, PhaseGVN* phase) {
 Node* InitializeNode::complete_stores(Node* rawctl, Node* rawmem, Node* rawptr,
                                       intptr_t header_size,
                                       Node* size_in_bytes,
-                                      PhaseGVN* phase) {
+                                      PhaseIterGVN* phase) {
   assert(!is_complete(), "not already complete");
   assert(stores_are_sane(phase), "");
   assert(allocation() != NULL, "must be present");
@@ -4220,7 +4267,7 @@ Node* InitializeNode::complete_stores(Node* rawctl, Node* rawmem, Node* rawptr,
     }
 
     // Collect the store and move on:
-    st->set_req(MemNode::Memory, inits);
+    phase->replace_input_of(st, MemNode::Memory, inits);
     inits = st;                 // put it on the linearized chain
     set_req(i, zmem);           // unhook from previous position
 

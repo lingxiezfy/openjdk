@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -40,14 +40,11 @@
 //
 // no virtual functions allowed
 
-extern bool always_do_update_barrier;
-
 // Forward declarations.
 class OopClosure;
 class ScanClosure;
 class FastScanClosure;
 class FilteringClosure;
-class CMSIsAliveClosure;
 
 class PSPromotionManager;
 class ParCompactionManager;
@@ -67,8 +64,8 @@ class oopDesc {
   inline markWord  mark_raw()      const;
   inline markWord* mark_addr_raw() const;
 
-  inline void set_mark(volatile markWord m);
-  inline void set_mark_raw(volatile markWord m);
+  inline void set_mark(markWord m);
+  inline void set_mark_raw(markWord m);
   static inline void set_mark_raw(HeapWord* mem, markWord m);
 
   inline void release_set_mark(markWord m);
@@ -81,8 +78,8 @@ class oopDesc {
   inline void init_mark_raw();
 
   inline Klass* klass() const;
-  inline Klass* klass_or_null() const volatile;
-  inline Klass* klass_or_null_acquire() const volatile;
+  inline Klass* klass_or_null() const;
+  inline Klass* klass_or_null_acquire() const;
   static inline Klass** klass_addr(HeapWord* mem);
   static inline narrowKlass* compressed_klass_addr(HeapWord* mem);
   inline Klass** klass_addr();
@@ -95,9 +92,6 @@ class oopDesc {
   inline int klass_gap() const;
   inline void set_klass_gap(int z);
   static inline void set_klass_gap(HeapWord* mem, int z);
-  // For when the klass pointer is being used as a linked list "next" field.
-  inline void set_klass_to_list_ptr(oop k);
-  inline oop list_ptr_from_klass();
 
   // size of object header, aligned to platform wordSize
   static int header_size() { return sizeof(oopDesc)/HeapWordSize; }
@@ -152,10 +146,6 @@ class oopDesc {
     }
   }
 
-  inline static bool equals(oop o1, oop o2) { return Access<>::equals(o1, o2); }
-
-  inline static bool equals_raw(oop o1, oop o2) { return RawAccess<>::equals(o1, o2); }
-
   // Access to fields in a instanceOop through these methods.
   template <DecoratorSet decorator>
   oop obj_field_access(int offset) const;
@@ -179,6 +169,8 @@ class oopDesc {
 
   jboolean bool_field(int offset) const;
   void bool_field_put(int offset, jboolean contents);
+  jboolean bool_field_volatile(int offset) const;
+  void bool_field_put_volatile(int offset, jboolean contents);
 
   jint int_field(int offset) const;
   jint int_field_raw(int offset) const;
@@ -256,15 +248,14 @@ class oopDesc {
   // asserts and guarantees
   static bool is_oop(oop obj, bool ignore_mark_word = false);
   static bool is_oop_or_null(oop obj, bool ignore_mark_word = false);
-#ifndef PRODUCT
-  static bool is_archived_object(oop p) NOT_CDS_JAVA_HEAP_RETURN_(false);
-#endif
 
   // garbage collection
   inline bool is_gc_marked() const;
 
   // Forward pointer operations for scavenge
   inline bool is_forwarded() const;
+
+  void verify_forwardee(oop forwardee) NOT_DEBUG_RETURN;
 
   inline void forward_to(oop p);
   inline bool cas_forward_to(oop p, markWord compare, atomic_memory_order order = memory_order_conservative);
@@ -331,8 +322,6 @@ class oopDesc {
   // for error reporting
   static void* load_klass_raw(oop obj);
   static void* load_oop_raw(oop obj, int offset);
-  static bool  is_valid(oop obj);
-  static oop   oop_or_null(address addr);
 };
 
 #endif // SHARE_OOPS_OOP_HPP

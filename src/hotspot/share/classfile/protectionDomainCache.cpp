@@ -45,7 +45,7 @@ int ProtectionDomainCacheTable::index_for(Handle protection_domain) {
 }
 
 ProtectionDomainCacheTable::ProtectionDomainCacheTable(int table_size)
-  : Hashtable<WeakHandle<vm_class_loader_data>, mtClass>(table_size, sizeof(ProtectionDomainCacheEntry))
+  : Hashtable<WeakHandle<vm_weak_data>, mtClass>(table_size, sizeof(ProtectionDomainCacheEntry))
 {   _dead_entries = false;
     _total_oops_removed = 0;
 }
@@ -160,7 +160,7 @@ ProtectionDomainCacheEntry* ProtectionDomainCacheTable::get(Handle protection_do
 ProtectionDomainCacheEntry* ProtectionDomainCacheTable::find_entry(int index, Handle protection_domain) {
   assert_locked_or_safepoint(SystemDictionary_lock);
   for (ProtectionDomainCacheEntry* e = bucket(index); e != NULL; e = e->next()) {
-    if (oopDesc::equals(e->object_no_keepalive(), protection_domain())) {
+    if (e->object_no_keepalive() == protection_domain()) {
       return e;
     }
   }
@@ -180,8 +180,8 @@ ProtectionDomainCacheEntry* ProtectionDomainCacheTable::add_entry(int index, uns
     protection_domain->print_value_on(&ls);
     ls.cr();
   }
-  WeakHandle<vm_class_loader_data> w = WeakHandle<vm_class_loader_data>::create(protection_domain);
+  WeakHandle<vm_weak_data> w = WeakHandle<vm_weak_data>::create(protection_domain);
   ProtectionDomainCacheEntry* p = new_entry(hash, w);
-  Hashtable<WeakHandle<vm_class_loader_data>, mtClass>::add_entry(index, p);
+  Hashtable<WeakHandle<vm_weak_data>, mtClass>::add_entry(index, p);
   return p;
 }

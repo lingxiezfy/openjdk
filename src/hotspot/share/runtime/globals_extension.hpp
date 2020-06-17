@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 #ifndef SHARE_RUNTIME_GLOBALS_EXTENSION_HPP
 #define SHARE_RUNTIME_GLOBALS_EXTENSION_HPP
 
+#include "runtime/flags/jvmFlag.hpp"
 #include "runtime/globals.hpp"
 #include "utilities/macros.hpp"
 
@@ -62,9 +63,7 @@ typedef enum {
             FLAG_MEMBER_ENUM_PRODUCT_RW,
             FLAG_MEMBER_ENUM_LP64_PRODUCT,
             IGNORE_RANGE,
-            IGNORE_CONSTRAINT,
-            IGNORE_WRITEABLE)
-  JVMFLAGSENUM_EXT
+            IGNORE_CONSTRAINT)
   NUM_JVMFlagsEnum
 } JVMFlagsEnum;
 
@@ -89,6 +88,7 @@ class JVMFlagEx : JVMFlag {
   static bool is_default(JVMFlagsEnum flag);
   static bool is_ergo(JVMFlagsEnum flag);
   static bool is_cmdline(JVMFlagsEnum flag);
+  static bool is_jimage_resource(JVMFlagsEnum flag);
 
   static void setOnCmdLine(JVMFlagsEnum flag);
 
@@ -128,12 +128,12 @@ ALL_FLAGS(FLAG_MEMBER_SET_DEVELOP,
           FLAG_MEMBER_SET_PRODUCT_RW,
           FLAG_MEMBER_SET_LP64_PRODUCT,
           IGNORE_RANGE,
-          IGNORE_CONSTRAINT,
-          IGNORE_WRITEABLE)
+          IGNORE_CONSTRAINT)
 
 #define FLAG_IS_DEFAULT(name)         (JVMFlagEx::is_default(FLAG_MEMBER_ENUM(name)))
 #define FLAG_IS_ERGO(name)            (JVMFlagEx::is_ergo(FLAG_MEMBER_ENUM(name)))
 #define FLAG_IS_CMDLINE(name)         (JVMFlagEx::is_cmdline(FLAG_MEMBER_ENUM(name)))
+#define FLAG_IS_JIMAGE_RESOURCE(name) (JVMFlagEx::is_jimage_resource(FLAG_MEMBER_ENUM(name)))
 
 #define FLAG_SET_DEFAULT(name, value) ((name) = (value))
 

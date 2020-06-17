@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -315,7 +315,7 @@ GrowableArray<JVMFlagRange*>* JVMFlagRangeList::_ranges = NULL;
 // Check the ranges of all flags that have them
 void JVMFlagRangeList::init(void) {
 
-  _ranges = new (ResourceObj::C_HEAP, mtArguments) GrowableArray<JVMFlagRange*>(INITIAL_RANGES_SIZE, true);
+  _ranges = new (ResourceObj::C_HEAP, mtArguments) GrowableArray<JVMFlagRange*>(INITIAL_RANGES_SIZE, mtArguments);
 
   EMIT_RANGE_START
 
@@ -331,10 +331,7 @@ void JVMFlagRangeList::init(void) {
             EMIT_RANGE_PRODUCT_RW_FLAG,
             EMIT_RANGE_LP64_PRODUCT_FLAG,
             EMIT_RANGE_CHECK,
-            IGNORE_CONSTRAINT,
-            IGNORE_WRITEABLE)
-
-  EMIT_RANGES_FOR_GLOBALS_EXT
+            IGNORE_CONSTRAINT)
 
   EMIT_RANGE_END
 }

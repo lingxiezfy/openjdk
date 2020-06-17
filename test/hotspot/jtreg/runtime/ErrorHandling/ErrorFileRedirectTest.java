@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2019, SAP. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -30,6 +30,7 @@
  * @library /test/lib
  * @modules java.base/jdk.internal.misc
  * @requires (vm.debug == true)
+ * @run driver ErrorFileRedirectTest
  */
 
 import jdk.test.lib.process.OutputAnalyzer;
@@ -58,7 +59,7 @@ public class ErrorFileRedirectTest {
 
     // we should have crashed with a SIGSEGV
     output_detail.shouldMatch("# A fatal error has been detected by the Java Runtime Environment:.*");
-    output_detail.shouldMatch("# +(?:SIGSEGV|EXCEPTION_ACCESS_VIOLATION).*");
+    output_detail.shouldMatch("# +(?:SIGSEGV|SIGBUS|EXCEPTION_ACCESS_VIOLATION).*");
 
     // If no redirection happened, we should find a mention of the file in the output.
     String hs_err_file = output_detail.firstMatch("# *(\\S*hs_err_pid\\d+\\.log)", 1);

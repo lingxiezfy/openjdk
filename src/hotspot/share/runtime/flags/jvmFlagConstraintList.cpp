@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -250,7 +250,7 @@ JVMFlagConstraint::ConstraintType JVMFlagConstraintList::_validating_type = JVMF
 
 // Check the ranges of all flags that have them or print them out and exit if requested
 void JVMFlagConstraintList::init(void) {
-  _constraints = new (ResourceObj::C_HEAP, mtArguments) GrowableArray<JVMFlagConstraint*>(INITIAL_CONSTRAINTS_SIZE, true);
+  _constraints = new (ResourceObj::C_HEAP, mtArguments) GrowableArray<JVMFlagConstraint*>(INITIAL_CONSTRAINTS_SIZE, mtArguments);
 
   EMIT_CONSTRAINT_START
 
@@ -266,10 +266,7 @@ void JVMFlagConstraintList::init(void) {
             EMIT_CONSTRAINT_PRODUCT_RW_FLAG,
             EMIT_CONSTRAINT_LP64_PRODUCT_FLAG,
             IGNORE_RANGE,
-            EMIT_CONSTRAINT_CHECK,
-            IGNORE_WRITEABLE)
-
-  EMIT_CONSTRAINTS_FOR_GLOBALS_EXT
+            EMIT_CONSTRAINT_CHECK)
 
   EMIT_CONSTRAINT_END
 }

@@ -30,7 +30,7 @@
 #include "oops/constantPool.hpp"
 #include "oops/instanceKlass.hpp"
 #include "oops/oop.inline.hpp"
-#include "oops/fieldStreams.hpp"
+#include "oops/fieldStreams.inline.hpp"
 #include "runtime/fieldDescriptor.inline.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/signature.hpp"
@@ -193,7 +193,7 @@ void fieldDescriptor::print_on_for(outputStream* st, oop obj) {
       if (obj->obj_field(offset()) != NULL) {
         obj->obj_field(offset())->print_value_on(st);
       } else {
-        st->print_cr("NULL");
+        st->print("NULL");
       }
       break;
     case T_OBJECT:
@@ -202,7 +202,7 @@ void fieldDescriptor::print_on_for(outputStream* st, oop obj) {
       if (obj->obj_field(offset()) != NULL) {
         obj->obj_field(offset())->print_value_on(st);
       } else {
-        st->print_cr("NULL");
+        st->print("NULL");
       }
       break;
     default:
@@ -212,7 +212,7 @@ void fieldDescriptor::print_on_for(outputStream* st, oop obj) {
   // Print a hint as to the underlying integer representation. This can be wrong for
   // pointers on an LP64 machine
 #ifdef _LP64
-  if ((ft == T_OBJECT || ft == T_ARRAY) && UseCompressedOops) {
+  if (is_reference_type(ft) && UseCompressedOops) {
     st->print(" (%x)", obj->int_field(offset()));
   }
   else // <- intended

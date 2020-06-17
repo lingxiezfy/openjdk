@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -42,6 +42,7 @@ JVMCICompiler::JVMCICompiler() : AbstractCompiler(compiler_jvmci) {
 
 // Initialization
 void JVMCICompiler::initialize() {
+  assert(!is_c1_or_interpreter_only(), "JVMCI is launched, it's not c1/interpreter only mode");
   if (!UseCompiler || !EnableJVMCI || !UseJVMCICompiler || !should_perform_init()) {
     return;
   }
@@ -50,6 +51,7 @@ void JVMCICompiler::initialize() {
 }
 
 void JVMCICompiler::bootstrap(TRAPS) {
+  assert(THREAD->is_Java_thread(), "must be");
   if (Arguments::mode() == Arguments::_int) {
     // Nothing to do in -Xint mode
     return;
@@ -60,13 +62,13 @@ void JVMCICompiler::bootstrap(TRAPS) {
   if (PrintBootstrap) {
     tty->print("Bootstrapping JVMCI");
   }
-  jlong start = os::javaTimeMillis();
+  jlong start = os::javaTimeNanos();
 
   Array<Method*>* objectMethods = SystemDictionary::Object_klass()->methods();
   // Initialize compile queue with a selected set of methods.
   int len = objectMethods->length();
   for (int i = 0; i < len; i++) {
-    methodHandle mh = objectMethods->at(i);
+    methodHandle mh(THREAD, objectMethods->at(i));
     if (!mh->is_native() && !mh->is_static() && !mh->is_initializer()) {
       ResourceMark rm;
       int hot_count = 10; // TODO: what's the appropriate value?
@@ -80,7 +82,7 @@ void JVMCICompiler::bootstrap(TRAPS) {
   do {
     // Loop until there is something in the queue.
     do {
-      os::sleep(THREAD, 100, true);
+      ((JavaThread*)THREAD)->sleep(100);
       qsize = CompileBroker::queue_size(CompLevel_full_optimization);
     } while (!_bootstrap_compilation_request_handled && first_round && qsize == 0);
     first_round = false;
@@ -93,13 +95,14 @@ void JVMCICompiler::bootstrap(TRAPS) {
   } while (qsize != 0);
 
   if (PrintBootstrap) {
-    tty->print_cr(" in " JLONG_FORMAT " ms (compiled %d methods)", os::javaTimeMillis() - start, _methods_compiled);
+    tty->print_cr(" in " JLONG_FORMAT " ms (compiled %d methods)",
+                  (jlong)nanos_to_millis(os::javaTimeNanos() - start), _methods_compiled);
   }
   _bootstrapping = false;
   JVMCI::compiler_runtime()->bootstrap_finished(CHECK);
 }
 
-bool JVMCICompiler::force_comp_at_level_simple(Method *method) {
+bool JVMCICompiler::force_comp_at_level_simple(const methodHandle& method) {
   if (UseJVMCINativeLibrary) {
     // This mechanism exists to force compilation of a JVMCI compiler by C1
     // to reduces the compilation time spent on the JVMCI compiler itself. In
@@ -122,7 +125,7 @@ bool JVMCICompiler::force_comp_at_level_simple(Method *method) {
     if (excludeModules.not_null()) {
       ModuleEntry* moduleEntry = method->method_holder()->module();
       for (int i = 0; i < excludeModules->length(); i++) {
-        if (oopDesc::equals(excludeModules->obj_at(i), moduleEntry->module())) {
+        if (excludeModules->obj_at(i) == moduleEntry->module()) {
           return true;
         }
       }

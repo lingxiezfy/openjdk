@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -265,8 +265,7 @@ bool JNIHandles::is_frame_handle(JavaThread* thr, jobject handle) {
   // as the java command executable, in which case, this type of handle
   // is not permitted.
   return (thr->has_last_Java_frame() &&
-         (void*)handle < (void*)thr->stack_base() &&
-         (void*)handle >= (void*)thr->last_Java_sp());
+          thr->is_in_stack_range_incl((address)handle, (address)thr->last_Java_sp()));
 }
 
 
@@ -483,7 +482,7 @@ void JNIHandleBlock::oops_do(OopClosure* f) {
 
 
 jobject JNIHandleBlock::allocate_handle(oop obj) {
-  assert(Universe::heap()->is_in_reserved(obj), "sanity check");
+  assert(Universe::heap()->is_in(obj), "sanity check");
   if (_top == 0) {
     // This is the first allocation or the initial block got zapped when
     // entering a native function. If we have any following blocks they are

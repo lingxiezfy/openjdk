@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,12 +25,11 @@
 package sun.jvm.hotspot.memory;
 
 import java.io.PrintStream;
-import java.util.Observable;
-import java.util.Observer;
+import sun.jvm.hotspot.utilities.Observable;
+import sun.jvm.hotspot.utilities.Observer;
 
 import sun.jvm.hotspot.debugger.Address;
 import sun.jvm.hotspot.debugger.OopHandle;
-import sun.jvm.hotspot.gc.cms.CMSHeap;
 import sun.jvm.hotspot.gc.epsilon.EpsilonHeap;
 import sun.jvm.hotspot.gc.g1.G1CollectedHeap;
 import sun.jvm.hotspot.gc.parallel.ParallelScavengeHeap;
@@ -41,6 +40,7 @@ import sun.jvm.hotspot.gc.z.ZCollectedHeap;
 import sun.jvm.hotspot.oops.Oop;
 import sun.jvm.hotspot.runtime.BasicType;
 import sun.jvm.hotspot.runtime.VM;
+import sun.jvm.hotspot.runtime.VMObject;
 import sun.jvm.hotspot.runtime.VirtualConstructor;
 import sun.jvm.hotspot.types.AddressField;
 import sun.jvm.hotspot.types.CIntegerField;
@@ -71,7 +71,7 @@ public class Universe {
       return true;
   }
 
-  private static void addHeapTypeIfInDB(TypeDataBase db, Class heapClass) {
+  private static void addHeapTypeIfInDB(TypeDataBase db, Class<? extends VMObject> heapClass) {
       String heapName = heapClass.getSimpleName();
       if (typeExists(db, heapName)) {
           heapConstructor.addMapping(heapName, heapClass);
@@ -84,7 +84,6 @@ public class Universe {
     collectedHeapField = type.getAddressField("_collectedHeap");
 
     heapConstructor = new VirtualConstructor(db);
-    addHeapTypeIfInDB(db, CMSHeap.class);
     addHeapTypeIfInDB(db, SerialHeap.class);
     addHeapTypeIfInDB(db, ParallelScavengeHeap.class);
     addHeapTypeIfInDB(db, G1CollectedHeap.class);

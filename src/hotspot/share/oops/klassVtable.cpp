@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -128,11 +128,6 @@ void klassVtable::compute_vtable_size_and_num_mirandas(
   *vtable_length_ret = vtable_length;
 }
 
-int klassVtable::index_of(Method* m, int len) const {
-  assert(m->has_vtable_index(), "do not ask this of non-vtable methods");
-  return m->vtable_index();
-}
-
 // Copy super class's vtable to the first part (prefix) of this class's vtable,
 // and return the number of entries copied.  Expects that 'super' is the Java
 // super class (arrays can have "array" super classes that must be skipped).
@@ -169,7 +164,6 @@ void klassVtable::initialize_vtable(bool checkconstraints, TRAPS) {
 
   // Note:  Arrays can have intermediate array supers.  Use java_super to skip them.
   InstanceKlass* super = _klass->java_super();
-  int nofNewEntries = 0;
 
   bool is_shared = _klass->is_shared();
 
@@ -297,23 +291,26 @@ InstanceKlass* klassVtable::find_transitive_override(InstanceKlass* initialsuper
                             int vtable_index, Handle target_loader, Symbol* target_classname, Thread * THREAD) {
   InstanceKlass* superk = initialsuper;
   while (superk != NULL && superk->super() != NULL) {
-    InstanceKlass* supersuperklass = InstanceKlass::cast(superk->super());
-    klassVtable ssVtable = supersuperklass->vtable();
+    klassVtable ssVtable = (superk->super())->vtable();
     if (vtable_index < ssVtable.length()) {
       Method* super_method = ssVtable.method_at(vtable_index);
+      // get the class holding the matching method
+      // make sure you use that class for is_override
+      InstanceKlass* supermethodholder = super_method->method_holder();
 #ifndef PRODUCT
       Symbol* name= target_method()->name();
       Symbol* signature = target_method()->signature();
       assert(super_method->name() == name && super_method->signature() == signature, "vtable entry name/sig mismatch");
 #endif
-      if (supersuperklass->is_override(super_method, target_loader, target_classname, THREAD)) {
+
+      if (supermethodholder->is_override(methodHandle(THREAD, super_method), target_loader, target_classname, THREAD)) {
         if (log_develop_is_enabled(Trace, vtables)) {
           ResourceMark rm(THREAD);
           LogTarget(Trace, vtables) lt;
           LogStream ls(lt);
           char* sig = target_method()->name_and_sig_as_C_string();
           ls.print("transitive overriding superclass %s with %s index %d, original flags: ",
-                       supersuperklass->internal_name(),
+                       supermethodholder->internal_name(),
                        sig, vtable_index);
           super_method->print_linkage_flags(&ls);
           ls.print("overriders flags: ");
@@ -467,7 +464,7 @@ bool klassVtable::update_inherited_vtable(InstanceKlass* klass, const methodHand
       // private methods are also never overridden
       if (!super_method->is_private() &&
           (is_default
-          || ((super_klass->is_override(super_method, target_loader, target_classname, THREAD))
+          || ((super_klass->is_override(methodHandle(THREAD, super_method), target_loader, target_classname, THREAD))
           || ((klass->major_version() >= VTABLE_TRANSITIVE_OVERRIDE_VERSION)
           && ((super_klass = find_transitive_override(super_klass,
                              target_method, i, target_loader,
@@ -491,12 +488,12 @@ bool klassVtable::update_inherited_vtable(InstanceKlass* klass, const methodHand
           // to link to the first super, and we get all the others.
           Handle super_loader(THREAD, super_klass->class_loader());
 
-          if (!oopDesc::equals(target_loader(), super_loader())) {
+          if (target_loader() != super_loader()) {
             ResourceMark rm(THREAD);
             Symbol* failed_type_symbol =
-              SystemDictionary::check_signature_loaders(signature, target_loader,
-                                                        super_loader, true,
-                                                        CHECK_(false));
+              SystemDictionary::check_signature_loaders(signature, _klass,
+                                                        target_loader, super_loader,
+                                                        true, CHECK_(false));
             if (failed_type_symbol != NULL) {
               stringStream ss;
               ss.print("loader constraint violation for class %s: when selecting "
@@ -631,7 +628,7 @@ bool klassVtable::needs_new_vtable_entry(const methodHandle& target_method,
 
   // search through the super class hierarchy to see if we need
   // a new entry
-  ResourceMark rm;
+  ResourceMark rm(THREAD);
   Symbol* name = target_method()->name();
   Symbol* signature = target_method()->signature();
   const Klass* k = super;
@@ -656,7 +653,7 @@ bool klassVtable::needs_new_vtable_entry(const methodHandle& target_method,
     // methods that have less accessibility
     if ((!super_method->is_static()) &&
        (!super_method->is_private())) {
-      if (superk->is_override(super_method, classloader, classname, THREAD)) {
+      if (superk->is_override(methodHandle(THREAD, super_method), classloader, classname, THREAD)) {
         return false;
       // else keep looking for transitive overrides
       }
@@ -964,6 +961,8 @@ bool klassVtable::adjust_default_method(int vtable_index, Method* old_method, Me
 // search the vtable for uses of either obsolete or EMCP methods
 void klassVtable::adjust_method_entries(bool * trace_name_printed) {
   int prn_enabled = 0;
+  ResourceMark rm;
+
   for (int index = 0; index < length(); index++) {
     Method* old_method = unchecked_method_at(index);
     if (old_method == NULL || !old_method->is_old()) {
@@ -981,27 +980,29 @@ void klassVtable::adjust_method_entries(bool * trace_name_printed) {
       updated_default = adjust_default_method(index, old_method, new_method);
     }
 
-    if (log_is_enabled(Info, redefine, class, update)) {
-      ResourceMark rm;
-      if (!(*trace_name_printed)) {
-        log_info(redefine, class, update)
-          ("adjust: klassname=%s for methods from name=%s",
-           _klass->external_name(), old_method->method_holder()->external_name());
-        *trace_name_printed = true;
-      }
-      log_debug(redefine, class, update, vtables)
-        ("vtable method update: %s(%s), updated default = %s",
-         new_method->name()->as_C_string(), new_method->signature()->as_C_string(), updated_default ? "true" : "false");
+    if (!(*trace_name_printed)) {
+      log_info(redefine, class, update)
+        ("adjust: klassname=%s for methods from name=%s",
+         _klass->external_name(), old_method->method_holder()->external_name());
+      *trace_name_printed = true;
     }
+    log_trace(redefine, class, update, vtables)
+      ("vtable method update: class: %s method: %s, updated default = %s",
+       _klass->external_name(), new_method->external_name(), updated_default ? "true" : "false");
   }
 }
 
 // a vtable should never contain old or obsolete methods
 bool klassVtable::check_no_old_or_obsolete_entries() {
+  ResourceMark rm;
+
   for (int i = 0; i < length(); i++) {
     Method* m = unchecked_method_at(i);
     if (m != NULL &&
         (NOT_PRODUCT(!m->is_valid() ||) m->is_old() || m->is_obsolete())) {
+      log_trace(redefine, class, update, vtables)
+        ("vtable check found old method entry: class: %s old: %d obsolete: %d, method: %s",
+         _klass->external_name(), m->is_old(), m->is_obsolete(), m->external_name());
       return false;
     }
   }
@@ -1028,15 +1029,6 @@ void klassVtable::dump_vtable() {
   }
 }
 #endif // INCLUDE_JVMTI
-
-// CDS/RedefineClasses support - clear vtables so they can be reinitialized
-void klassVtable::clear_vtable() {
-  for (int i = 0; i < _length; i++) table()[i].clear();
-}
-
-bool klassVtable::is_initialized() {
-  return _length == 0 || table()[0].method() != NULL;
-}
 
 //-----------------------------------------------------------------------------------------
 // Itable code
@@ -1212,7 +1204,7 @@ void klassItable::initialize_itable_for_interface(int method_table_offset, Insta
   int ime_count = method_count_for_interface(interf);
   for (int i = 0; i < nof_methods; i++) {
     Method* m = methods->at(i);
-    methodHandle target;
+    Method* target = NULL;
     if (m->has_itable_index()) {
       // This search must match the runtime resolution, i.e. selection search for invokeinterface
       // to correctly enforce loader constraints for interface method inheritance.
@@ -1237,10 +1229,12 @@ void klassItable::initialize_itable_for_interface(int method_table_offset, Insta
       // if checkconstraints requested
       if (checkconstraints) {
         Handle method_holder_loader (THREAD, target->method_holder()->class_loader());
-        if (!oopDesc::equals(method_holder_loader(), interface_loader())) {
+        InstanceKlass* method_holder = target->method_holder();
+        if (method_holder_loader() != interface_loader()) {
           ResourceMark rm(THREAD);
           Symbol* failed_type_symbol =
             SystemDictionary::check_signature_loaders(m->signature(),
+                                                      _klass,
                                                       method_holder_loader,
                                                       interface_loader,
                                                       true, CHECK);
@@ -1255,12 +1249,12 @@ void klassItable::initialize_itable_for_interface(int method_table_offset, Insta
                      " different Class objects for the type %s used in the signature (%s; %s)",
                      interf->class_loader_data()->loader_name_and_id(),
                      interf->external_name(),
-                     target()->method_holder()->class_loader_data()->loader_name_and_id(),
-                     target()->method_holder()->external_kind(),
-                     target()->method_holder()->external_name(),
+                     method_holder->class_loader_data()->loader_name_and_id(),
+                     method_holder->external_kind(),
+                     method_holder->external_name(),
                      failed_type_symbol->as_klass_external_name(),
                      interf->class_in_module_of_loader(false, true),
-                     target()->method_holder()->class_in_module_of_loader(false, true));
+                     method_holder->class_in_module_of_loader(false, true));
             THROW_MSG(vmSymbols::java_lang_LinkageError(), ss.as_string());
           }
         }
@@ -1269,18 +1263,18 @@ void klassItable::initialize_itable_for_interface(int method_table_offset, Insta
       // ime may have moved during GC so recalculate address
       int ime_num = m->itable_index();
       assert(ime_num < ime_count, "oob");
-      itableOffsetEntry::method_entry(_klass, method_table_offset)[ime_num].initialize(target());
+      itableOffsetEntry::method_entry(_klass, method_table_offset)[ime_num].initialize(target);
       if (log_develop_is_enabled(Trace, itables)) {
         ResourceMark rm(THREAD);
-        if (target() != NULL) {
+        if (target != NULL) {
           LogTarget(Trace, itables) lt;
           LogStream ls(lt);
-          char* sig = target()->name_and_sig_as_C_string();
+          char* sig = target->name_and_sig_as_C_string();
           ls.print("interface: %s, ime_num: %d, target: %s, method_holder: %s ",
                        interf->internal_name(), ime_num, sig,
-                       target()->method_holder()->internal_name());
+                       target->method_holder()->internal_name());
           ls.print("target_method flags: ");
-          target()->print_linkage_flags(&ls);
+          target->print_linkage_flags(&ls);
           ls.cr();
         }
       }
@@ -1291,8 +1285,9 @@ void klassItable::initialize_itable_for_interface(int method_table_offset, Insta
 #if INCLUDE_JVMTI
 // search the itable for uses of either obsolete or EMCP methods
 void klassItable::adjust_method_entries(bool * trace_name_printed) {
-
+  ResourceMark rm;
   itableMethodEntry* ime = method_entry(0);
+
   for (int i = 0; i < _size_method_table; i++, ime++) {
     Method* old_method = ime->method();
     if (old_method == NULL || !old_method->is_old()) {
@@ -1302,25 +1297,27 @@ void klassItable::adjust_method_entries(bool * trace_name_printed) {
     Method* new_method = old_method->get_new_method();
     ime->initialize(new_method);
 
-    if (log_is_enabled(Info, redefine, class, update)) {
-      ResourceMark rm;
-      if (!(*trace_name_printed)) {
-        log_info(redefine, class, update)("adjust: name=%s", old_method->method_holder()->external_name());
-        *trace_name_printed = true;
-      }
-      log_trace(redefine, class, update, itables)
-        ("itable method update: %s(%s)", new_method->name()->as_C_string(), new_method->signature()->as_C_string());
+    if (!(*trace_name_printed)) {
+      log_info(redefine, class, update)("adjust: name=%s", old_method->method_holder()->external_name());
+      *trace_name_printed = true;
     }
+    log_trace(redefine, class, update, itables)
+      ("itable method update: class: %s method: %s", _klass->external_name(), new_method->external_name());
   }
 }
 
 // an itable should never contain old or obsolete methods
 bool klassItable::check_no_old_or_obsolete_entries() {
+  ResourceMark rm;
   itableMethodEntry* ime = method_entry(0);
+
   for (int i = 0; i < _size_method_table; i++) {
     Method* m = ime->method();
     if (m != NULL &&
         (NOT_PRODUCT(!m->is_valid() ||) m->is_old() || m->is_obsolete())) {
+      log_trace(redefine, class, update, itables)
+        ("itable check found old method entry: class: %s old: %d obsolete: %d, method: %s",
+         _klass->external_name(), m->is_old(), m->is_obsolete(), m->external_name());
       return false;
     }
     ime++;
@@ -1468,31 +1465,6 @@ void klassItable::setup_itable_offset_table(InstanceKlass* klass) {
 #endif
 }
 
-
-// inverse to itable_index
-Method* klassItable::method_for_itable_index(InstanceKlass* intf, int itable_index) {
-  assert(intf->is_interface(), "sanity check");
-  assert(intf->verify_itable_index(itable_index), "");
-  Array<Method*>* methods = InstanceKlass::cast(intf)->methods();
-
-  if (itable_index < 0 || itable_index >= method_count_for_interface(intf))
-    return NULL;                // help caller defend against bad indices
-
-  int index = itable_index;
-  Method* m = methods->at(index);
-  int index2 = -1;
-  while (!m->has_itable_index() ||
-         (index2 = m->itable_index()) != itable_index) {
-    assert(index2 < itable_index, "monotonic");
-    if (++index == methods->length())
-      return NULL;
-    m = methods->at(index);
-  }
-  assert(m->itable_index() == itable_index, "correct inverse");
-
-  return m;
-}
-
 void klassVtable::verify(outputStream* st, bool forced) {
   // make sure table is initialized
   if (!Universe::is_fully_initialized()) return;
@@ -1541,7 +1513,6 @@ void klassVtable::print() {
 #endif
 
 void vtableEntry::verify(klassVtable* vt, outputStream* st) {
-  NOT_PRODUCT(FlagSetting fs(IgnoreLockingAssertions, true));
   Klass* vtklass = vt->klass();
   if (vtklass->is_instance_klass() &&
      (InstanceKlass::cast(vtklass)->major_version() >= klassVtable::VTABLE_TRANSITIVE_OVERRIDE_VERSION)) {

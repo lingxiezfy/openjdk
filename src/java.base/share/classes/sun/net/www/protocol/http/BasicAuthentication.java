@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,8 +38,8 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Objects;
 import sun.net.www.HeaderParser;
-import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.nio.charset.StandardCharsets.ISO_8859_1;
+import sun.nio.cs.ISO_8859_1;
+import sun.nio.cs.UTF_8;
 
 /**
  * BasicAuthentication: Encapsulate an http server authentication using
@@ -51,6 +51,7 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 class BasicAuthentication extends AuthenticationInfo {
 
+    @java.io.Serial
     private static final long serialVersionUID = 100L;
 
     /** The authentication string for this host, port, and realm.  This is
@@ -100,10 +101,11 @@ class BasicAuthentication extends AuthenticationInfo {
         char[] password = pw.getPassword();
         CharBuffer cbuf = CharBuffer.allocate(plain.length() + password.length);
         cbuf.put(plain).put(password).flip();
-        Charset charset = isUTF8 ? UTF_8 : ISO_8859_1;
+        Charset charset = isUTF8 ? UTF_8.INSTANCE : ISO_8859_1.INSTANCE;
         ByteBuffer buf = charset.encode(cbuf);
         ByteBuffer enc = Base64.getEncoder().encode(buf);
-        String ret = "Basic " + new String(enc.array(), enc.position(), enc.remaining(), ISO_8859_1);
+        String ret = "Basic " + new String(enc.array(), enc.position(), enc.remaining(),
+                ISO_8859_1.INSTANCE);
         Arrays.fill(buf.array(), (byte) 0);
         Arrays.fill(enc.array(), (byte) 0);
         Arrays.fill(cbuf.array(), (char) 0);

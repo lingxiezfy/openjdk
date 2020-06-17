@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,6 +29,7 @@
 #include "classfile/systemDictionary.hpp"
 #include "oops/instanceKlass.hpp"
 #include "oops/oop.hpp"
+#include "oops/oopHandle.hpp"
 #include "utilities/hashtable.hpp"
 #include "utilities/ostream.hpp"
 
@@ -156,7 +157,6 @@ class DictionaryEntry : public HashtableEntry<InstanceKlass*, mtClass> {
   // Tells whether the initiating class' protection domain can access the klass in this entry
   bool is_valid_protection_domain(Handle protection_domain) {
     if (!ProtectionDomainVerification) return true;
-    if (!SystemDictionary::has_checkPackageAccess()) return true;
 
     return protection_domain() == NULL
          ? true
@@ -181,7 +181,7 @@ class SymbolPropertyEntry : public HashtableEntry<Symbol*, mtSymbol> {
  private:
   intptr_t _symbol_mode;  // secondary key
   Method*   _method;
-  oop       _method_type;
+  OopHandle _method_type;
 
  public:
   Symbol* symbol() const            { return literal(); }
@@ -192,9 +192,10 @@ class SymbolPropertyEntry : public HashtableEntry<Symbol*, mtSymbol> {
   Method*        method() const     { return _method; }
   void set_method(Method* p)        { _method = p; }
 
-  oop      method_type() const      { return _method_type; }
-  oop*     method_type_addr()       { return &_method_type; }
-  void set_method_type(oop p)       { _method_type = p; }
+  oop      method_type() const;
+  void set_method_type(oop p);
+
+  void free_entry();
 
   SymbolPropertyEntry* next() const {
     return (SymbolPropertyEntry*)HashtableEntry<Symbol*, mtSymbol>::next();
@@ -254,11 +255,7 @@ public:
   SymbolPropertyTable(int table_size);
   SymbolPropertyTable(int table_size, HashtableBucket<mtSymbol>* t, int number_of_entries);
 
-  void free_entry(SymbolPropertyEntry* entry) {
-    // decrement Symbol refcount here because hashtable doesn't.
-    entry->literal()->decrement_refcount();
-    Hashtable<Symbol*, mtSymbol>::free_entry(entry);
-  }
+  void free_entry(SymbolPropertyEntry* entry);
 
   unsigned int compute_hash(Symbol* sym, intptr_t symbol_mode) {
     // Use the regular identity_hash.
@@ -274,9 +271,6 @@ public:
 
   // must be done under SystemDictionary_lock
   SymbolPropertyEntry* add_entry(int index, unsigned int hash, Symbol* name, intptr_t name_mode);
-
-  // GC support
-  void oops_do(OopClosure* f);
 
   void methods_do(void f(Method*));
 

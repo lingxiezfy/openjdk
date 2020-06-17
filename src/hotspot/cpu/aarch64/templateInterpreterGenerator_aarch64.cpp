@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2014, 2019, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -49,6 +49,7 @@
 #include "runtime/timer.hpp"
 #include "runtime/vframeArray.hpp"
 #include "utilities/debug.hpp"
+#include "utilities/powerOfTwo.hpp"
 #include <sys/types.h>
 
 #ifndef PRODUCT
@@ -285,7 +286,6 @@ void TemplateInterpreterGenerator::generate_transcendental_entry(AbstractInterpr
     }
     break;
   case Interpreter::java_lang_math_pow :
-    fpargs = 2;
     if (StubRoutines::dpow() == NULL) {
       fn = CAST_FROM_FN_PTR(address, SharedRuntime::dpow);
     } else {
@@ -444,7 +444,6 @@ address TemplateInterpreterGenerator::generate_return_entry_for(TosState state, 
     Register obj = r0;
     Register mdp = r1;
     Register tmp = r2;
-    __ ldr(mdp, Address(rmethod, Method::method_data_offset()));
     __ profile_return_type(mdp, obj, tmp);
   }
 
@@ -940,8 +939,7 @@ address TemplateInterpreterGenerator::generate_Reference_get_entry(void) {
 
   address entry = __ pc();
 
-  const int referent_offset = java_lang_ref_Reference::referent_offset;
-  guarantee(referent_offset > 0, "referent offset not initialized");
+  const int referent_offset = java_lang_ref_Reference::referent_offset();
 
   Label slow_path;
   const Register local_0 = c_rarg0;
@@ -1634,13 +1632,8 @@ address TemplateInterpreterGenerator::generate_normal_entry(bool synchronized) {
   __ mov(rscratch2, true);
   __ strb(rscratch2, do_not_unlock_if_synchronized);
 
-  Label no_mdp;
   Register mdp = r3;
-  __ ldr(mdp, Address(rmethod, Method::method_data_offset()));
-  __ cbz(mdp, no_mdp);
-  __ add(mdp, mdp, in_bytes(MethodData::data_offset()));
   __ profile_parameters_type(mdp, r1, r2);
-  __ bind(no_mdp);
 
   // increment invocation count & check for overflow
   Label invocation_counter_overflow;

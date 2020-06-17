@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -119,6 +119,11 @@ class SystemProperty : public PathString {
       return set_value(value);
     }
     return false;
+  }
+  void append_writeable_value(const char *value) {
+    if (writeable()) {
+      append_value(value);
+    }
   }
 
   // Constructor
@@ -322,9 +327,6 @@ class Arguments : AllStatic {
   // java launcher
   static const char* _sun_java_launcher;
 
-  // sun.java.launcher.pid, private property
-  static int    _sun_java_launcher_pid;
-
   // was this VM created via the -XXaltjvm=<path> option
   static bool   _sun_java_launcher_is_altjvm;
 
@@ -373,7 +375,7 @@ class Arguments : AllStatic {
   static void set_use_compressed_oops();
   static void set_use_compressed_klass_ptrs();
   static jint set_ergonomics_flags();
-  static void set_shared_spaces_flags();
+  static jint set_shared_spaces_flags_and_archive_paths();
   // limits the given memory size by the maximum amount of memory this process is
   // currently allowed to allocate or reserve.
   static julong limit_by_allocatable_memory(julong size);
@@ -392,8 +394,11 @@ class Arguments : AllStatic {
   static bool add_property(const char* prop, PropertyWriteable writeable=WriteableProperty,
                            PropertyInternal internal=ExternalProperty);
 
-  static bool create_property(const char* prop_name, const char* prop_value, PropertyInternal internal);
-  static bool create_numbered_property(const char* prop_base_name, const char* prop_value, unsigned int count);
+  // Used for module system related properties: converted from command-line flags.
+  // Basic properties are writeable as they operate as "last one wins" and will get overwritten.
+  // Numbered properties are never writeable, and always internal.
+  static bool create_module_property(const char* prop_name, const char* prop_value, PropertyInternal internal);
+  static bool create_numbered_module_property(const char* prop_base_name, const char* prop_value, unsigned int count);
 
   static int process_patch_mod_option(const char* patch_mod_tail, bool* patch_mod_javabase);
 
@@ -428,9 +433,8 @@ class Arguments : AllStatic {
 
   static bool handle_deprecated_print_gc_flags();
 
-  static void handle_extra_cms_flags(const char* msg);
-
-  static jint parse_vm_init_args(const JavaVMInitArgs *java_tool_options_args,
+  static jint parse_vm_init_args(const JavaVMInitArgs *vm_options_args,
+                                 const JavaVMInitArgs *java_tool_options_args,
                                  const JavaVMInitArgs *java_options_args,
                                  const JavaVMInitArgs *cmd_line_args);
   static jint parse_each_vm_init_arg(const JavaVMInitArgs* args, bool* patch_mod_javabase, JVMFlag::Flags origin);
@@ -485,6 +489,7 @@ class Arguments : AllStatic {
 
   static char*  SharedArchivePath;
   static char*  SharedDynamicArchivePath;
+  static size_t _default_SharedBaseAddress; // The default value specified in globals.hpp
   static int num_archives(const char* archive_path) NOT_CDS_RETURN_(0);
   static void extract_shared_archive_paths(const char* archive_path,
                                          char** base_archive_path,
@@ -548,8 +553,6 @@ class Arguments : AllStatic {
   static bool created_by_java_launcher();
   // -Dsun.java.launcher.is_altjvm
   static bool sun_java_launcher_is_altjvm();
-  // -Dsun.java.launcher.pid
-  static int sun_java_launcher_pid()        { return _sun_java_launcher_pid; }
 
   // -Xrun
   static AgentLibrary* libraries()          { return _libraryList.first(); }
@@ -569,7 +572,7 @@ class Arguments : AllStatic {
 
   static const char* GetSharedArchivePath() { return SharedArchivePath; }
   static const char* GetSharedDynamicArchivePath() { return SharedDynamicArchivePath; }
-
+  static size_t default_SharedBaseAddress() { return _default_SharedBaseAddress; }
   // Java launcher properties
   static void process_sun_java_launcher_properties(JavaVMInitArgs* args);
 
@@ -652,6 +655,14 @@ class Arguments : AllStatic {
   static bool atojulong(const char *s, julong* result);
 
   static bool has_jfr_option() NOT_JFR_RETURN_(false);
+
+  static bool is_dumping_archive() { return DumpSharedSpaces || DynamicDumpSharedSpaces; }
+
+  static void assert_is_dumping_archive() {
+    assert(Arguments::is_dumping_archive(), "dump time only");
+  }
+
+  DEBUG_ONLY(static bool verify_special_jvm_flags(bool check_globals);)
 };
 
 // Disable options not supported in this release, with a warning if they

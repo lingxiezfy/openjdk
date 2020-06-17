@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,12 +29,10 @@
 #include "memory/allocation.hpp"
 #include "memory/iterator.hpp"
 #include "runtime/thread.hpp"
+#include "runtime/threadSMR.hpp"
 #include "utilities/globalDefinitions.hpp"
 
-class ZRootsIteratorClosure : public OopClosure {
-public:
-  virtual void do_thread(Thread* thread) {}
-};
+class ZRootsIteratorClosure;
 
 typedef OopStorage::ParState<true /* concurrent */, false /* is_const */> ZOopStorageIterator;
 
@@ -82,18 +80,40 @@ public:
   void weak_oops_do(BoolObjectClosure* is_alive, ZRootsIteratorClosure* cl);
 };
 
+class ZRootsIteratorClosure : public OopClosure {
+public:
+  virtual void do_thread(Thread* thread) {}
+
+  virtual bool should_disarm_nmethods() const {
+    return false;
+  }
+};
+
+class ZJavaThreadsIterator {
+private:
+  ThreadsListHandle _threads;
+  volatile uint     _claimed;
+
+  uint claim();
+
+public:
+  ZJavaThreadsIterator();
+
+  void threads_do(ThreadClosure* cl);
+};
+
 class ZRootsIterator {
 private:
-  bool _visit_invisible;
-  bool _visit_jvmti_weak_export;
+  const bool           _visit_jvmti_weak_export;
+  ZJavaThreadsIterator _java_threads_iter;
 
   void do_universe(ZRootsIteratorClosure* cl);
   void do_object_synchronizer(ZRootsIteratorClosure* cl);
   void do_management(ZRootsIteratorClosure* cl);
   void do_jvmti_export(ZRootsIteratorClosure* cl);
   void do_jvmti_weak_export(ZRootsIteratorClosure* cl);
-  void do_system_dictionary(ZRootsIteratorClosure* cl);
-  void do_threads(ZRootsIteratorClosure* cl);
+  void do_vm_thread(ZRootsIteratorClosure* cl);
+  void do_java_threads(ZRootsIteratorClosure* cl);
   void do_code_cache(ZRootsIteratorClosure* cl);
 
   ZSerialOopsDo<ZRootsIterator, &ZRootsIterator::do_universe>            _universe;
@@ -101,21 +121,15 @@ private:
   ZSerialOopsDo<ZRootsIterator, &ZRootsIterator::do_management>          _management;
   ZSerialOopsDo<ZRootsIterator, &ZRootsIterator::do_jvmti_export>        _jvmti_export;
   ZSerialOopsDo<ZRootsIterator, &ZRootsIterator::do_jvmti_weak_export>   _jvmti_weak_export;
-  ZSerialOopsDo<ZRootsIterator, &ZRootsIterator::do_system_dictionary>   _system_dictionary;
-  ZParallelOopsDo<ZRootsIterator, &ZRootsIterator::do_threads>           _threads;
+  ZSerialOopsDo<ZRootsIterator, &ZRootsIterator::do_vm_thread>           _vm_thread;
+  ZParallelOopsDo<ZRootsIterator, &ZRootsIterator::do_java_threads>      _java_threads;
   ZParallelOopsDo<ZRootsIterator, &ZRootsIterator::do_code_cache>        _code_cache;
 
 public:
-  ZRootsIterator(bool visit_invisible = true, bool visit_jvmti_weak_export = false);
+  ZRootsIterator(bool visit_jvmti_weak_export = false);
   ~ZRootsIterator();
 
   void oops_do(ZRootsIteratorClosure* cl);
-};
-
-class ZRootsIteratorNoInvisible : public ZRootsIterator {
-public:
-  ZRootsIteratorNoInvisible() :
-      ZRootsIterator(false /* visit_invisible */, false /* visit_jvmti_weak_export */) {}
 };
 
 class ZConcurrentRootsIterator {

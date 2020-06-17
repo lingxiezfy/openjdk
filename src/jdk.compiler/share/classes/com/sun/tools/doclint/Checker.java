@@ -203,6 +203,7 @@ public class Checker extends DocTreePathScanner<Void, Void> {
             case INTERFACE:
             case ENUM:
             case ANNOTATION_TYPE:
+            case RECORD:
                 implicitHeadingRank = 1;
                 break;
 
@@ -374,7 +375,7 @@ public class Checker extends DocTreePathScanner<Void, Void> {
         }
 
         // check for self closing tags, such as <a id="name"/>
-        if (tree.isSelfClosing()) {
+        if (tree.isSelfClosing() && !isSelfClosingAllowed(t)) {
             env.messages.error(HTML, tree, "dc.tag.self.closing", treeName);
         }
 
@@ -412,6 +413,13 @@ public class Checker extends DocTreePathScanner<Void, Void> {
             if (t == null || t.endKind == HtmlTag.EndKind.NONE)
                 tagStack.pop();
         }
+    }
+
+    // so-called "self-closing" tags are only permitted in HTML 5, for void elements
+    // https://html.spec.whatwg.org/multipage/syntax.html#start-tags
+    private boolean isSelfClosingAllowed(HtmlTag tag) {
+        return env.htmlVersion == HtmlVersion.HTML5
+                && tag.endKind == HtmlTag.EndKind.NONE;
     }
 
     private void checkStructure(StartElementTree tree, HtmlTag t) {
@@ -802,6 +810,7 @@ public class Checker extends DocTreePathScanner<Void, Void> {
 
     @Override @DefinedBy(Api.COMPILER_TREE)
     public Void visitIndex(IndexTree tree, Void ignore) {
+        markEnclosingTag(Flag.HAS_INLINE_TAG);
         for (TagStackItem tsi : tagStack) {
             if (tsi.tag == HtmlTag.A) {
                 env.messages.warning(HTML, tree, "dc.tag.a.within.a",
@@ -914,14 +923,9 @@ public class Checker extends DocTreePathScanner<Void, Void> {
 
     @Override @DefinedBy(Api.COMPILER_TREE)
     public Void visitReference(ReferenceTree tree, Void ignore) {
-        String sig = tree.getSignature();
-        if (sig.contains("<") || sig.contains(">")) {
-            env.messages.error(REFERENCE, tree, "dc.type.arg.not.allowed");
-        } else {
-            Element e = env.trees.getElement(getCurrentPath());
-            if (e == null)
-                env.messages.error(REFERENCE, tree, "dc.ref.not.found");
-        }
+        Element e = env.trees.getElement(getCurrentPath());
+        if (e == null)
+            env.messages.error(REFERENCE, tree, "dc.ref.not.found");
         return super.visitReference(tree, ignore);
     }
 
@@ -960,6 +964,7 @@ public class Checker extends DocTreePathScanner<Void, Void> {
 
     @Override @DefinedBy(Api.COMPILER_TREE)
     public Void visitSummary(SummaryTree node, Void aVoid) {
+        markEnclosingTag(Flag.HAS_INLINE_TAG);
         int idx = env.currDocComment.getFullBody().indexOf(node);
         // Warn if the node is preceded by non-whitespace characters,
         // or other non-text nodes.
@@ -971,6 +976,7 @@ public class Checker extends DocTreePathScanner<Void, Void> {
 
     @Override @DefinedBy(Api.COMPILER_TREE)
     public Void visitSystemProperty(SystemPropertyTree tree, Void ignore) {
+        markEnclosingTag(Flag.HAS_INLINE_TAG);
         for (TagStackItem tsi : tagStack) {
             if (tsi.tag == HtmlTag.A) {
                 env.messages.warning(HTML, tree, "dc.tag.a.within.a",
@@ -1045,6 +1051,7 @@ public class Checker extends DocTreePathScanner<Void, Void> {
 
     @Override @DefinedBy(Api.COMPILER_TREE)
     public Void visitUnknownInlineTag(UnknownInlineTagTree tree, Void ignore) {
+        markEnclosingTag(Flag.HAS_INLINE_TAG);
         checkUnknownTag(tree, tree.getTagName());
         return super.visitUnknownInlineTag(tree, ignore);
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,9 +27,9 @@
 #include "classfile/vmSymbols.hpp"
 #include "memory/metaspace.hpp"
 #include "oops/oop.inline.hpp"
+#include "runtime/atomic.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/javaCalls.hpp"
-#include "runtime/orderAccess.hpp"
 #include "services/lowMemoryDetector.hpp"
 #include "services/management.hpp"
 #include "services/memoryManager.hpp"
@@ -42,24 +42,27 @@ MemoryPool::MemoryPool(const char* name,
                        size_t init_size,
                        size_t max_size,
                        bool support_usage_threshold,
-                       bool support_gc_threshold) {
-  _name = name;
-  _initial_size = init_size;
-  _max_size = max_size;
-  (void)const_cast<instanceOop&>(_memory_pool_obj = instanceOop(NULL));
-  _available_for_allocation = true;
-  _num_managers = 0;
-  _type = type;
-
-  // initialize the max and init size of collection usage
-  _after_gc_usage = MemoryUsage(_initial_size, 0, 0, _max_size);
-
-  _usage_sensor = NULL;
-  _gc_usage_sensor = NULL;
+                       bool support_gc_threshold) :
+  _name(name),
+  _type(type),
+  _initial_size(init_size),
+  _max_size(max_size),
+  _available_for_allocation(true),
+  _managers(),
+  _num_managers(0),
+  _peak_usage(),
+  _after_gc_usage(init_size, 0, 0, max_size),
   // usage threshold supports both high and low threshold
-  _usage_threshold = new ThresholdSupport(support_usage_threshold, support_usage_threshold);
+  _usage_threshold(new ThresholdSupport(support_usage_threshold, support_usage_threshold)),
   // gc usage threshold supports only high threshold
-  _gc_usage_threshold = new ThresholdSupport(support_gc_threshold, support_gc_threshold);
+  _gc_usage_threshold(new ThresholdSupport(support_gc_threshold, support_gc_threshold)),
+  _usage_sensor(),
+  _gc_usage_sensor(),
+  _memory_pool_obj()
+{}
+
+bool MemoryPool::is_pool(instanceHandle pool) const {
+  return pool() == Atomic::load(&_memory_pool_obj);
 }
 
 void MemoryPool::add_manager(MemoryManager* mgr) {
@@ -77,7 +80,7 @@ void MemoryPool::add_manager(MemoryManager* mgr) {
 instanceOop MemoryPool::get_memory_pool_instance(TRAPS) {
   // Must do an acquire so as to force ordering of subsequent
   // loads from anything _memory_pool_obj points to or implies.
-  instanceOop pool_obj = OrderAccess::load_acquire(&_memory_pool_obj);
+  instanceOop pool_obj = Atomic::load_acquire(&_memory_pool_obj);
   if (pool_obj == NULL) {
     // It's ok for more than one thread to execute the code up to the locked region.
     // Extra pool instances will just be gc'ed.
@@ -110,7 +113,7 @@ instanceOop MemoryPool::get_memory_pool_instance(TRAPS) {
 
     {
       // Get lock since another thread may have create the instance
-      MutexLocker ml(Management_lock);
+      MutexLocker ml(THREAD, Management_lock);
 
       // Check if another thread has created the pool.  We reload
       // _memory_pool_obj here because some other thread may have
@@ -118,7 +121,7 @@ instanceOop MemoryPool::get_memory_pool_instance(TRAPS) {
       //
       // The lock has done an acquire, so the load can't float above it,
       // but we need to do a load_acquire as above.
-      pool_obj = OrderAccess::load_acquire(&_memory_pool_obj);
+      pool_obj = Atomic::load_acquire(&_memory_pool_obj);
       if (pool_obj != NULL) {
          return pool_obj;
       }
@@ -130,7 +133,7 @@ instanceOop MemoryPool::get_memory_pool_instance(TRAPS) {
       // with creating the pool are visible before publishing its address.
       // The unlock will publish the store to _memory_pool_obj because
       // it does a release first.
-      OrderAccess::release_store(&_memory_pool_obj, pool_obj);
+      Atomic::release_store(&_memory_pool_obj, pool_obj);
     }
   }
 

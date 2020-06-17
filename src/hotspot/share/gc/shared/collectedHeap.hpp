@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -51,6 +51,7 @@ class GCTracer;
 class GCMemoryManager;
 class MemoryPool;
 class MetaspaceSummary;
+class ReservedHeapSpace;
 class SoftRefPolicy;
 class Thread;
 class ThreadClosure;
@@ -87,7 +88,6 @@ class GCHeapLog : public EventLogBase<GCMessage> {
 // CollectedHeap
 //   GenCollectedHeap
 //     SerialHeap
-//     CMSHeap
 //   G1CollectedHeap
 //   ParallelScavengeHeap
 //   ShenandoahHeap
@@ -102,9 +102,10 @@ class CollectedHeap : public CHeapObj<mtInternal> {
  private:
   GCHeapLog* _gc_heap_log;
 
+ protected:
+  // Not used by all GCs
   MemRegion _reserved;
 
- protected:
   bool _is_gc_active;
 
   // Used for filler objects (static, but initialized in ctor).
@@ -170,7 +171,6 @@ class CollectedHeap : public CHeapObj<mtInternal> {
     None,
     Serial,
     Parallel,
-    CMS,
     G1,
     Epsilon,
     Z,
@@ -203,9 +203,7 @@ class CollectedHeap : public CHeapObj<mtInternal> {
   virtual void safepoint_synchronize_begin() {}
   virtual void safepoint_synchronize_end() {}
 
-  void initialize_reserved_region(HeapWord *start, HeapWord *end);
-  MemRegion reserved_region() const { return _reserved; }
-  address base() const { return (address)reserved_region().start(); }
+  void initialize_reserved_region(const ReservedHeapSpace& rs);
 
   virtual size_t capacity() const = 0;
   virtual size_t used() const = 0;
@@ -225,15 +223,6 @@ class CollectedHeap : public CHeapObj<mtInternal> {
   // (e.g., in the case of the young gen, one of the survivor
   // spaces).
   virtual size_t max_capacity() const = 0;
-
-  // Returns "TRUE" if "p" points into the reserved area of the heap.
-  bool is_in_reserved(const void* p) const {
-    return _reserved.contains(p);
-  }
-
-  bool is_in_reserved_or_null(const void* p) const {
-    return p == NULL || is_in_reserved(p);
-  }
 
   // Returns "TRUE" iff "p" points into the committed areas of the heap.
   // This method can be expensive so avoid using it in performance critical
@@ -378,7 +367,6 @@ class CollectedHeap : public CHeapObj<mtInternal> {
   unsigned int total_full_collections() const { return _total_full_collections;}
 
   // Increment total number of GC collections (started)
-  // Should be protected but used by PSMarkSweep - cleanup for 1.4.2
   void increment_total_collections(bool full = false) {
     _total_collections++;
     if (full) {
@@ -398,31 +386,8 @@ class CollectedHeap : public CHeapObj<mtInternal> {
   // Iterate over all objects, calling "cl.do_object" on each.
   virtual void object_iterate(ObjectClosure* cl) = 0;
 
-  // Similar to object_iterate() except iterates only
-  // over live objects.
-  virtual void safe_object_iterate(ObjectClosure* cl) = 0;
-
-  // NOTE! There is no requirement that a collector implement these
-  // functions.
-  //
-  // A CollectedHeap is divided into a dense sequence of "blocks"; that is,
-  // each address in the (reserved) heap is a member of exactly
-  // one block.  The defining characteristic of a block is that it is
-  // possible to find its size, and thus to progress forward to the next
-  // block.  (Blocks may be of different sizes.)  Thus, blocks may
-  // represent Java objects, or they might be free blocks in a
-  // free-list-based heap (or subheap), as long as the two kinds are
-  // distinguishable and the size of each is determinable.
-
-  // Returns the address of the start of the "block" that contains the
-  // address "addr".  We say "blocks" instead of "object" since some heaps
-  // may not pack objects densely; a chunk may either be an object or a
-  // non-object.
-  virtual HeapWord* block_start(const void* addr) const = 0;
-
-  // Requires "addr" to be the start of a block, and returns "TRUE" iff
-  // the block is an object.
-  virtual bool block_is_obj(const HeapWord* addr) const = 0;
+  // Keep alive an object that was loaded with AS_NO_KEEPALIVE.
+  virtual void keep_alive(oop obj) {}
 
   // Returns the longest time (in ms) that has elapsed since the last
   // time that any part of the heap was examined by a garbage collection.
@@ -461,13 +426,9 @@ class CollectedHeap : public CHeapObj<mtInternal> {
 
   virtual void print_on_error(outputStream* st) const;
 
-  // Print all GC threads (other than the VM thread)
-  // used by this heap.
-  virtual void print_gc_threads_on(outputStream* st) const = 0;
-  // The default behavior is to call print_gc_threads_on() on tty.
-  void print_gc_threads() {
-    print_gc_threads_on(tty);
-  }
+  // Used to print information about locations in the hs_err file.
+  virtual bool print_location(outputStream* st, void* addr) const = 0;
+
   // Iterator for all GC threads (other than VM thread)
   virtual void gc_threads_do(ThreadClosure* tc) const = 0;
 
@@ -491,24 +452,9 @@ class CollectedHeap : public CHeapObj<mtInternal> {
   // Heap verification
   virtual void verify(VerifyOption option) = 0;
 
-  // Return true if concurrent phase control (via
-  // request_concurrent_phase_control) is supported by this collector.
-  // The default implementation returns false.
-  virtual bool supports_concurrent_phase_control() const;
-
-  // Request the collector enter the indicated concurrent phase, and
-  // wait until it does so.  Supports WhiteBox testing.  Only one
-  // request may be active at a time.  Phases are designated by name;
-  // the set of names and their meaning is GC-specific.  Once the
-  // requested phase has been reached, the collector will attempt to
-  // avoid transitioning to a new phase until a new request is made.
-  // [Note: A collector might not be able to remain in a given phase.
-  // For example, a full collection might cancel an in-progress
-  // concurrent collection.]
-  //
-  // Returns true when the phase is reached.  Returns false for an
-  // unknown phase.  The default implementation returns false.
-  virtual bool request_concurrent_phase(const char* phase);
+  // Return true if concurrent gc control via WhiteBox is supported by
+  // this collector.  The default implementation returns false.
+  virtual bool supports_concurrent_gc_breakpoints() const;
 
   // Provides a thread pool to SafepointSynchronize to use
   // for parallel safepoint cleanup.

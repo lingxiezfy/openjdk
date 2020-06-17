@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -666,7 +666,7 @@ BytecodeInterpreter::run(interpreterState istate) {
         BasicObjectLock* mon = &istate->monitor_base()[-1];
         mon->set_obj(rcvr);
         bool success = false;
-        uintptr_t epoch_mask_in_place = (uintptr_t)markWord::epoch_mask_in_place;
+        uintptr_t epoch_mask_in_place = markWord::epoch_mask_in_place;
         markWord mark = rcvr->mark();
         intptr_t hash = (intptr_t) markWord::no_hash;
         // Implies UseBiasedLocking.
@@ -675,8 +675,8 @@ BytecodeInterpreter::run(interpreterState istate) {
           uintptr_t anticipated_bias_locking_value;
           thread_ident = (uintptr_t)istate->thread();
           anticipated_bias_locking_value =
-            (((uintptr_t)rcvr->klass()->prototype_header().value() | thread_ident) ^ mark.value()) &
-            ~((uintptr_t) markWord::age_mask_in_place);
+            ((rcvr->klass()->prototype_header().value() | thread_ident) ^ mark.value()) &
+            ~(markWord::age_mask_in_place);
 
           if (anticipated_bias_locking_value == 0) {
             // Already biased towards this thread, nothing to do.
@@ -711,8 +711,8 @@ BytecodeInterpreter::run(interpreterState istate) {
           } else {
             // Try to bias towards thread in case object is anonymously biased.
             markWord header(mark.value() &
-                            ((uintptr_t)markWord::biased_lock_mask_in_place |
-                             (uintptr_t)markWord::age_mask_in_place | epoch_mask_in_place));
+                            (markWord::biased_lock_mask_in_place |
+                             markWord::age_mask_in_place | epoch_mask_in_place));
             if (hash != markWord::no_hash) {
               header = header.copy_set_hash(hash);
             }
@@ -851,7 +851,7 @@ BytecodeInterpreter::run(interpreterState istate) {
       assert(entry->obj() == NULL, "Frame manager didn't allocate the monitor");
       entry->set_obj(lockee);
       bool success = false;
-      uintptr_t epoch_mask_in_place = (uintptr_t)markWord::epoch_mask_in_place;
+      uintptr_t epoch_mask_in_place = markWord::epoch_mask_in_place;
 
       markWord mark = lockee->mark();
       intptr_t hash = (intptr_t) markWord::no_hash;
@@ -861,8 +861,8 @@ BytecodeInterpreter::run(interpreterState istate) {
         uintptr_t anticipated_bias_locking_value;
         thread_ident = (uintptr_t)istate->thread();
         anticipated_bias_locking_value =
-          (((uintptr_t)lockee->klass()->prototype_header().value() | thread_ident) ^ mark.value()) &
-          ~((uintptr_t) markWord::age_mask_in_place);
+          ((lockee->klass()->prototype_header().value() | thread_ident) ^ mark.value()) &
+          ~(markWord::age_mask_in_place);
 
         if  (anticipated_bias_locking_value == 0) {
           // already biased towards this thread, nothing to do
@@ -897,8 +897,8 @@ BytecodeInterpreter::run(interpreterState istate) {
           success = true;
         } else {
           // try to bias towards thread in case object is anonymously biased
-          markWord header(mark.value() & ((uintptr_t)markWord::biased_lock_mask_in_place |
-                                          (uintptr_t)markWord::age_mask_in_place | epoch_mask_in_place));
+          markWord header(mark.value() & (markWord::biased_lock_mask_in_place |
+                                          markWord::age_mask_in_place | epoch_mask_in_place));
           if (hash != markWord::no_hash) {
             header = header.copy_set_hash(hash);
           }
@@ -1791,7 +1791,7 @@ run:
         if (entry != NULL) {
           entry->set_obj(lockee);
           int success = false;
-          uintptr_t epoch_mask_in_place = (uintptr_t)markWord::epoch_mask_in_place;
+          uintptr_t epoch_mask_in_place = markWord::epoch_mask_in_place;
 
           markWord mark = lockee->mark();
           intptr_t hash = (intptr_t) markWord::no_hash;
@@ -1801,8 +1801,8 @@ run:
             uintptr_t anticipated_bias_locking_value;
             thread_ident = (uintptr_t)istate->thread();
             anticipated_bias_locking_value =
-              (((uintptr_t)lockee->klass()->prototype_header().value() | thread_ident) ^ mark.value()) &
-              ~((uintptr_t) markWord::age_mask_in_place);
+              ((lockee->klass()->prototype_header().value() | thread_ident) ^ mark.value()) &
+              ~(markWord::age_mask_in_place);
 
             if  (anticipated_bias_locking_value == 0) {
               // already biased towards this thread, nothing to do
@@ -1839,8 +1839,8 @@ run:
             }
             else {
               // try to bias towards thread in case object is anonymously biased
-              markWord header(mark.value() & ((uintptr_t)markWord::biased_lock_mask_in_place |
-                                              (uintptr_t)markWord::age_mask_in_place |
+              markWord header(mark.value() & (markWord::biased_lock_mask_in_place |
+                                              markWord::age_mask_in_place |
                                               epoch_mask_in_place));
               if (hash != markWord::no_hash) {
                 header = header.copy_set_hash(hash);
@@ -2163,7 +2163,7 @@ run:
               HeapWord* compare_to = *Universe::heap()->top_addr();
               HeapWord* new_top = compare_to + obj_size;
               if (new_top <= *Universe::heap()->end_addr()) {
-                if (Atomic::cmpxchg(new_top, Universe::heap()->top_addr(), compare_to) != compare_to) {
+                if (Atomic::cmpxchg(Universe::heap()->top_addr(), compare_to, new_top) != compare_to) {
                   goto retry;
                 }
                 result = (oop) compare_to;
@@ -2173,7 +2173,7 @@ run:
             if (result != NULL) {
               // Initialize object (if nonzero size and need) and then the header
               if (need_zero ) {
-                HeapWord* to_zero = (HeapWord*) result + sizeof(oopDesc) / oopSize;
+                HeapWord* to_zero = cast_from_oop<HeapWord*>(result) + sizeof(oopDesc) / oopSize;
                 obj_size -= sizeof(oopDesc) / oopSize;
                 if (obj_size > 0 ) {
                   memset(to_zero, 0, obj_size * HeapWordSize);
@@ -2347,11 +2347,8 @@ run:
 
           case JVM_CONSTANT_Dynamic:
             {
-              oop result = constants->resolved_references()->obj_at(index);
-              if (result == NULL) {
-                CALL_VM(InterpreterRuntime::resolve_ldc(THREAD, (Bytecodes::Code) opcode), handle_exception);
-                result = THREAD->vm_result();
-              }
+              CALL_VM(InterpreterRuntime::resolve_ldc(THREAD, (Bytecodes::Code) opcode), handle_exception);
+              oop result = THREAD->vm_result();
               VERIFY_OOP(result);
 
               jvalue value;
@@ -2391,11 +2388,8 @@ run:
 
           case JVM_CONSTANT_Dynamic:
             {
-              oop result = constants->resolved_references()->obj_at(index);
-              if (result == NULL) {
-                CALL_VM(InterpreterRuntime::resolve_ldc(THREAD, (Bytecodes::Code) opcode), handle_exception);
-                result = THREAD->vm_result();
-              }
+              CALL_VM(InterpreterRuntime::resolve_ldc(THREAD, (Bytecodes::Code) opcode), handle_exception);
+              oop result = THREAD->vm_result();
               VERIFY_OOP(result);
 
               jvalue value;
@@ -2436,7 +2430,7 @@ run:
                   handle_exception);
           result = THREAD->vm_result();
         }
-        if (oopDesc::equals(result, Universe::the_null_sentinel()))
+        if (result == Universe::the_null_sentinel())
           result = NULL;
 
         VERIFY_OOP(result);
@@ -2462,8 +2456,8 @@ run:
         if (VerifyOops) method->verify();
 
         if (cache->has_appendix()) {
-          ConstantPool* constants = METHOD->constants();
-          SET_STACK_OBJECT(cache->appendix_if_resolved(constants), 0);
+          constantPoolHandle cp(THREAD, METHOD->constants());
+          SET_STACK_OBJECT(cache->appendix_if_resolved(cp), 0);
           MORE_STACK(1);
         }
 
@@ -2493,8 +2487,8 @@ run:
         if (VerifyOops) method->verify();
 
         if (cache->has_appendix()) {
-          ConstantPool* constants = METHOD->constants();
-          SET_STACK_OBJECT(cache->appendix_if_resolved(constants), 0);
+          constantPoolHandle cp(THREAD, METHOD->constants());
+          SET_STACK_OBJECT(cache->appendix_if_resolved(cp), 0);
           MORE_STACK(1);
         }
 
@@ -3494,12 +3488,6 @@ BytecodeInterpreter::print() {
   tty->print_cr("stack_base: " INTPTR_FORMAT, (uintptr_t) this->_stack_base);
   tty->print_cr("stack_limit: " INTPTR_FORMAT, (uintptr_t) this->_stack_limit);
   tty->print_cr("monitor_base: " INTPTR_FORMAT, (uintptr_t) this->_monitor_base);
-#ifdef SPARC
-  tty->print_cr("last_Java_pc: " INTPTR_FORMAT, (uintptr_t) this->_last_Java_pc);
-  tty->print_cr("frame_bottom: " INTPTR_FORMAT, (uintptr_t) this->_frame_bottom);
-  tty->print_cr("&native_fresult: " INTPTR_FORMAT, (uintptr_t) &this->_native_fresult);
-  tty->print_cr("native_lresult: " INTPTR_FORMAT, (uintptr_t) this->_native_lresult);
-#endif
 #if !defined(ZERO) && defined(PPC)
   tty->print_cr("last_Java_fp: " INTPTR_FORMAT, (uintptr_t) this->_last_Java_fp);
 #endif // !ZERO

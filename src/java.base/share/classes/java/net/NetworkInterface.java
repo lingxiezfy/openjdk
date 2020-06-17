@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -341,7 +341,7 @@ public final class NetworkInterface {
      * {@link #getInetAddresses()} to obtain all IP addresses for this node
      *
      * @return an Enumeration of NetworkInterfaces found on this machine
-     * @exception  SocketException  if an I/O error occurs,
+     * @throws     SocketException  if an I/O error occurs,
      *             or if the platform does not have at least one configured
      *             network interface.
      * @see #networkInterfaces()
@@ -371,7 +371,7 @@ public final class NetworkInterface {
      * }</pre>
      *
      * @return a Stream of NetworkInterfaces found on this machine
-     * @exception  SocketException  if an I/O error occurs,
+     * @throws     SocketException  if an I/O error occurs,
      *             or if the platform does not have at least one configured
      *             network interface.
      * @since 9
@@ -450,7 +450,7 @@ public final class NetworkInterface {
      * Returns whether a network interface is up and running.
      *
      * @return  {@code true} if the interface is up and running.
-     * @exception       SocketException if an I/O error occurs.
+     * @throws          SocketException if an I/O error occurs.
      * @since 1.6
      */
 
@@ -462,7 +462,7 @@ public final class NetworkInterface {
      * Returns whether a network interface is a loopback interface.
      *
      * @return  {@code true} if the interface is a loopback interface.
-     * @exception       SocketException if an I/O error occurs.
+     * @throws          SocketException if an I/O error occurs.
      * @since 1.6
      */
 
@@ -477,7 +477,7 @@ public final class NetworkInterface {
      *
      * @return  {@code true} if the interface is a point to point
      *          interface.
-     * @exception       SocketException if an I/O error occurs.
+     * @throws          SocketException if an I/O error occurs.
      * @since 1.6
      */
 
@@ -489,7 +489,7 @@ public final class NetworkInterface {
      * Returns whether a network interface supports multicasting or not.
      *
      * @return  {@code true} if the interface supports Multicasting.
-     * @exception       SocketException if an I/O error occurs.
+     * @throws          SocketException if an I/O error occurs.
      * @since 1.6
      */
 
@@ -508,7 +508,7 @@ public final class NetworkInterface {
      *          manager is set and the caller does not have the permission
      *          NetPermission("getNetworkInformation")
      *
-     * @exception       SocketException if an I/O error occurs.
+     * @throws          SocketException if an I/O error occurs.
      * @since 1.6
      */
     public byte[] getHardwareAddress() throws SocketException {
@@ -523,6 +523,9 @@ public final class NetworkInterface {
                 }
             }
         }
+        if (isLoopback0(name, index)) {
+            return null;
+        }
         for (InetAddress addr : addrs) {
             if (addr instanceof Inet4Address) {
                 return getMacAddr0(((Inet4Address)addr).getAddress(), name, index);
@@ -535,7 +538,7 @@ public final class NetworkInterface {
      * Returns the Maximum Transmission Unit (MTU) of this interface.
      *
      * @return the value of the MTU for that interface.
-     * @exception       SocketException if an I/O error occurs.
+     * @throws          SocketException if an I/O error occurs.
      * @since 1.6
      */
     public int getMTU() throws SocketException {

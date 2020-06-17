@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018, Red Hat, Inc. All rights reserved.
+ * Copyright (c) 2018, 2019, Red Hat, Inc. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
@@ -47,13 +48,20 @@ inline void ShenandoahPacer::report_alloc(size_t words) {
 inline void ShenandoahPacer::report_internal(size_t words) {
   assert(ShenandoahPacing, "Only be here when pacing is enabled");
   STATIC_ASSERT(sizeof(size_t) <= sizeof(intptr_t));
-  Atomic::add((intptr_t)words, &_budget);
+  intptr_t inc = (intptr_t) words;
+  intptr_t new_budget = Atomic::add(&_budget, inc);
+
+  // Was the budget replenished beyond zero? Then all pacing claims
+  // are satisfied, notify the waiters.
+  if (new_budget >= 0 && (new_budget - inc) < 0) {
+    notify_waiters();
+  }
 }
 
 inline void ShenandoahPacer::report_progress_internal(size_t words) {
   assert(ShenandoahPacing, "Only be here when pacing is enabled");
   STATIC_ASSERT(sizeof(size_t) <= sizeof(intptr_t));
-  Atomic::add((intptr_t)words, &_progress);
+  Atomic::add(&_progress, (intptr_t)words);
 }
 
 #endif // SHARE_GC_SHENANDOAH_SHENANDOAHPACER_INLINE_HPP

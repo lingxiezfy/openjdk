@@ -1207,7 +1207,7 @@ class ClassHierarchyWalker {
           ClassHierarchyWalker wf(_participants, _num_participants);
           Klass* w = wf.find_witness_subtype(k);
           if (w != NULL) {
-            Method* wm = InstanceKlass::cast(w)->find_instance_method(_name, _signature);
+            Method* wm = InstanceKlass::cast(w)->find_instance_method(_name, _signature, Klass::skip_private);
             if (!Dependencies::is_concrete_method(wm, w)) {
               // Found a concrete subtype 'w' which does not override abstract method 'm'.
               // Bail out because 'm' could be called with 'w' as receiver (leading to an
@@ -1813,12 +1813,12 @@ Klass* Dependencies::check_call_site_target_value(oop call_site, oop method_hand
 
   if (changes == NULL) {
     // Validate all CallSites
-    if (!oopDesc::equals(java_lang_invoke_CallSite::target(call_site), method_handle))
+    if (java_lang_invoke_CallSite::target(call_site) != method_handle)
       return call_site->klass();  // assertion failed
   } else {
     // Validate the given CallSite
-    if (oopDesc::equals(call_site, changes->call_site()) && !oopDesc::equals(java_lang_invoke_CallSite::target(call_site), changes->method_handle())) {
-      assert(!oopDesc::equals(method_handle, changes->method_handle()), "must be");
+    if (call_site == changes->call_site() && java_lang_invoke_CallSite::target(call_site) != changes->method_handle()) {
+      assert(method_handle != changes->method_handle(), "must be");
       return call_site->klass();  // assertion failed
     }
   }

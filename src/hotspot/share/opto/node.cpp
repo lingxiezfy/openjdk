@@ -28,6 +28,7 @@
 #include "libadt/vectset.hpp"
 #include "memory/allocation.inline.hpp"
 #include "memory/resourceArea.hpp"
+#include "opto/ad.hpp"
 #include "opto/castnode.hpp"
 #include "opto/cfgnode.hpp"
 #include "opto/connode.hpp"
@@ -41,6 +42,7 @@
 #include "opto/type.hpp"
 #include "utilities/copy.hpp"
 #include "utilities/macros.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 class RegMask;
 // #include "phase.hpp"
@@ -546,9 +548,6 @@ Node *Node::clone() const {
   if (n->is_SafePoint()) {
     n->as_SafePoint()->clone_replaced_nodes();
   }
-  if (n->is_Load()) {
-    n->as_Load()->copy_barrier_info(this);
-  }
   return n;                     // Return the clone
 }
 
@@ -656,7 +655,7 @@ void Node::grow( uint len ) {
     to[3] = NULL;
     return;
   }
-  while( new_max <= len ) new_max <<= 1; // Find next power-of-2
+  new_max = next_power_of_2(len);
   // Trimming to limit allows a uint8 to handle up to 255 edges.
   // Previously I was using only powers-of-2 which peaked at 128 edges.
   //if( new_max >= limit ) new_max = limit-1;
@@ -679,7 +678,7 @@ void Node::out_grow( uint len ) {
     _out = (Node **)arena->Amalloc(4*sizeof(Node*));
     return;
   }
-  while( new_max <= len ) new_max <<= 1; // Find next power-of-2
+  new_max = next_power_of_2(len);
   // Trimming to limit allows a uint8 to handle up to 255 edges.
   // Previously I was using only powers-of-2 which peaked at 128 edges.
   //if( new_max >= limit ) new_max = limit-1;
@@ -704,8 +703,25 @@ bool Node::is_dead() const {
   dump();
   return true;
 }
-#endif
 
+bool Node::is_reachable_from_root() const {
+  ResourceMark rm;
+  Unique_Node_List wq;
+  wq.push((Node*)this);
+  RootNode* root = Compile::current()->root();
+  for (uint i = 0; i < wq.size(); i++) {
+    Node* m = wq.at(i);
+    if (m == root) {
+      return true;
+    }
+    for (DUIterator_Fast jmax, j = m->fast_outs(jmax); j < jmax; j++) {
+      Node* u = m->fast_out(j);
+      wq.push(u);
+    }
+  }
+  return false;
+}
+#endif
 
 //------------------------------is_unreachable---------------------------------
 bool Node::is_unreachable(PhaseIterGVN &igvn) const {
@@ -1018,7 +1034,12 @@ bool Node::verify_jvms(const JVMState* using_jvms) const {
 //------------------------------init_NodeProperty------------------------------
 void Node::init_NodeProperty() {
   assert(_max_classes <= max_jushort, "too many NodeProperty classes");
-  assert(_max_flags <= max_jushort, "too many NodeProperty flags");
+  assert(max_flags() <= max_jushort, "too many NodeProperty flags");
+}
+
+//-----------------------------max_flags---------------------------------------
+juint Node::max_flags() {
+  return (PD::_last_flag << 1) - 1; // allow flags combination
 }
 #endif
 
@@ -1151,7 +1172,7 @@ bool Node::has_special_unique_user() const {
     // See IfProjNode::Identity()
     return true;
   } else {
-    return BarrierSet::barrier_set()->barrier_set_c2()->has_special_unique_user(this);
+    return false;
   }
 };
 
@@ -1456,10 +1477,6 @@ bool Node::needs_anti_dependence_check() const {
   if (req() < 2 || (_flags & Flag_needs_anti_dependence_check) == 0) {
     return false;
   }
-  BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
-  if (!bs->needs_anti_dependence_check(this)) {
-    return false;
-  }
   return in(1)->bottom_type()->has_memory();
 }
 
@@ -1577,6 +1594,11 @@ Node* find_node(Node* n, int idx) {
   return n->find(idx);
 }
 
+// call this from debugger with root node as default:
+Node* find_node(int idx) {
+  return Compile::current()->root()->find(idx);
+}
+
 //------------------------------find-------------------------------------------
 Node* Node::find(int idx) const {
   ResourceArea *area = Thread::current()->resource_area();
@@ -1613,12 +1635,15 @@ static bool is_disconnected(const Node* n) {
 }
 
 #ifdef ASSERT
-static void dump_orig(Node* orig, outputStream *st) {
+void Node::dump_orig(outputStream *st, bool print_key) const {
   Compile* C = Compile::current();
+  Node* orig = _debug_orig;
   if (NotANode(orig)) orig = NULL;
   if (orig != NULL && !C->node_arena()->contains(orig)) orig = NULL;
   if (orig == NULL) return;
-  st->print(" !orig=");
+  if (print_key) {
+    st->print(" !orig=");
+  }
   Node* fast = orig->debug_orig(); // tortoise & hare algorithm to detect loops
   if (NotANode(fast)) fast = NULL;
   while (orig != NULL) {
@@ -1683,7 +1708,7 @@ void Node::dump(const char* suffix, bool mark, outputStream *st) const {
   if (is_disconnected(this)) {
 #ifdef ASSERT
     st->print("  [%d]",debug_idx());
-    dump_orig(debug_orig(), st);
+    dump_orig(st);
 #endif
     st->cr();
     C->_in_dump_cnt--;
@@ -1731,7 +1756,7 @@ void Node::dump(const char* suffix, bool mark, outputStream *st) const {
     t->dump_on(st);
   }
   if (is_new) {
-    debug_only(dump_orig(debug_orig(), st));
+    DEBUG_ONLY(dump_orig(st));
     Node_Notes* nn = C->node_notes_at(_idx);
     if (nn != NULL && !nn->is_clear()) {
       if (nn->jvms() != NULL) {
@@ -2112,7 +2137,8 @@ void Node::verify_edges(Unique_Node_List &visited) {
       }
       assert( cnt == 0,"Mismatched edge count.");
     } else if (n == NULL) {
-      assert(i >= req() || i == 0 || is_Region() || is_Phi(), "only regions or phis have null data edges");
+      assert(i >= req() || i == 0 || is_Region() || is_Phi() || is_ArrayCopy()
+              || (is_Unlock() && i == req()-1), "only region, phi, arraycopy or unlock nodes have null data edges");
     } else {
       assert(n->is_top(), "sanity");
       // Nothing to check.
@@ -2126,65 +2152,78 @@ void Node::verify_edges(Unique_Node_List &visited) {
   }
 }
 
-//------------------------------verify_recur-----------------------------------
-static const Node *unique_top = NULL;
-
-void Node::verify_recur(const Node *n, int verify_depth,
-                        VectorSet &old_space, VectorSet &new_space) {
-  if ( verify_depth == 0 )  return;
-  if (verify_depth > 0)  --verify_depth;
-
+// Verify all nodes if verify_depth is negative
+void Node::verify(Node* n, int verify_depth) {
+  assert(verify_depth != 0, "depth should not be 0");
+  ResourceMark rm;
+  ResourceArea* area = Thread::current()->resource_area();
+  VectorSet old_space(area);
+  VectorSet new_space(area);
+  Node_List worklist(area);
+  worklist.push(n);
   Compile* C = Compile::current();
+  uint last_index_on_current_depth = 0;
+  verify_depth--; // Visiting the first node on depth 1
+  // Only add nodes to worklist if verify_depth is negative (visit all nodes) or greater than 0
+  bool add_to_worklist = verify_depth != 0;
 
-  // Contained in new_space or old_space?
-  VectorSet *v = C->node_arena()->contains(n) ? &new_space : &old_space;
-  // Check for visited in the proper space.  Numberings are not unique
-  // across spaces so we need a separate VectorSet for each space.
-  if( v->test_set(n->_idx) ) return;
 
-  if (n->is_Con() && n->bottom_type() == Type::TOP) {
-    if (C->cached_top_node() == NULL)
-      C->set_cached_top_node((Node*)n);
-    assert(C->cached_top_node() == n, "TOP node must be unique");
-  }
+  for (uint list_index = 0; list_index < worklist.size(); list_index++) {
+    n = worklist[list_index];
 
-  for( uint i = 0; i < n->len(); i++ ) {
-    Node *x = n->in(i);
-    if (!x || x->is_top()) continue;
-
-    // Verify my input has a def-use edge to me
-    if (true /*VerifyDefUse*/) {
-      // Count use-def edges from n to x
-      int cnt = 0;
-      for( uint j = 0; j < n->len(); j++ )
-        if( n->in(j) == x )
-          cnt++;
-      // Count def-use edges from x to n
-      uint max = x->_outcnt;
-      for( uint k = 0; k < max; k++ )
-        if (x->_out[k] == n)
-          cnt--;
-      assert( cnt == 0, "mismatched def-use edge counts" );
+    if (n->is_Con() && n->bottom_type() == Type::TOP) {
+      if (C->cached_top_node() == NULL) {
+        C->set_cached_top_node((Node*)n);
+      }
+      assert(C->cached_top_node() == n, "TOP node must be unique");
     }
 
-    verify_recur(x, verify_depth, old_space, new_space);
+    for (uint i = 0; i < n->len(); i++) {
+      Node* x = n->in(i);
+      if (!x || x->is_top()) {
+        continue;
+      }
+
+      // Verify my input has a def-use edge to me
+      // Count use-def edges from n to x
+      int cnt = 0;
+      for (uint j = 0; j < n->len(); j++) {
+        if (n->in(j) == x) {
+          cnt++;
+        }
+      }
+
+      // Count def-use edges from x to n
+      uint max = x->_outcnt;
+      for (uint k = 0; k < max; k++) {
+        if (x->_out[k] == n) {
+          cnt--;
+        }
+      }
+      assert(cnt == 0, "mismatched def-use edge counts");
+
+      // Contained in new_space or old_space?
+      VectorSet* v = C->node_arena()->contains(x) ? &new_space : &old_space;
+      // Check for visited in the proper space. Numberings are not unique
+      // across spaces so we need a separate VectorSet for each space.
+      if (add_to_worklist && !v->test_set(x->_idx)) {
+        worklist.push(x);
+      }
+    }
+
+    if (verify_depth > 0 && list_index == last_index_on_current_depth) {
+      // All nodes on this depth were processed and its inputs are on the worklist. Decrement verify_depth and
+      // store the current last list index which is the last node in the list with the new depth. All nodes
+      // added afterwards will have a new depth again. Stop adding new nodes if depth limit is reached (=0).
+      verify_depth--;
+      if (verify_depth == 0) {
+        add_to_worklist = false;
+      }
+      last_index_on_current_depth = worklist.size() - 1;
+    }
   }
-
-}
-
-//------------------------------verify-----------------------------------------
-// Check Def-Use info for my subgraph
-void Node::verify() const {
-  Compile* C = Compile::current();
-  Node* old_top = C->cached_top_node();
-  ResourceMark rm;
-  ResourceArea *area = Thread::current()->resource_area();
-  VectorSet old_space(area), new_space(area);
-  verify_recur(this, -1, old_space, new_space);
-  C->set_cached_top_node(old_top);
 }
 #endif
-
 
 //------------------------------walk-------------------------------------------
 // Graph walk, with both pre-order and post-order functions
@@ -2246,7 +2285,7 @@ void Node_Array::grow( uint i ) {
     _nodes[0] = NULL;
   }
   uint old = _max;
-  while( i >= _max ) _max <<= 1;        // Double to fit
+  _max = next_power_of_2(i);
   _nodes = (Node**)_a->Arealloc( _nodes, old*sizeof(Node*),_max*sizeof(Node*));
   Copy::zero_to_bytes( &_nodes[old], (_max-old)*sizeof(Node*) );
 }
@@ -2389,14 +2428,15 @@ void Node_List::dump_simple() const {
 
 //=============================================================================
 //------------------------------remove-----------------------------------------
-void Unique_Node_List::remove( Node *n ) {
-  if( _in_worklist[n->_idx] ) {
-    for( uint i = 0; i < size(); i++ )
-      if( _nodes[i] == n ) {
-        map(i,Node_List::pop());
-        _in_worklist >>= n->_idx;
+void Unique_Node_List::remove(Node* n) {
+  if (_in_worklist.test(n->_idx)) {
+    for (uint i = 0; i < size(); i++) {
+      if (_nodes[i] == n) {
+        map(i, Node_List::pop());
+        _in_worklist.remove(n->_idx);
         return;
       }
+    }
     ShouldNotReachHere();
   }
 }
@@ -2405,11 +2445,11 @@ void Unique_Node_List::remove( Node *n ) {
 // Remove useless nodes from worklist
 void Unique_Node_List::remove_useless_nodes(VectorSet &useful) {
 
-  for( uint i = 0; i < size(); ++i ) {
+  for (uint i = 0; i < size(); ++i) {
     Node *n = at(i);
     assert( n != NULL, "Did not expect null entries in worklist");
-    if( ! useful.test(n->_idx) ) {
-      _in_worklist >>= n->_idx;
+    if (!useful.test(n->_idx)) {
+      _in_worklist.remove(n->_idx);
       map(i,Node_List::pop());
       // Node *replacement = Node_List::pop();
       // if( i != size() ) { // Check if removing last entry

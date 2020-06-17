@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -302,7 +302,7 @@ public final class StackTraceElement implements java.io.Serializable {
      * </ul>
      *
      * <p> The first example shows a stack trace element consisting of
-     * three elements, each separated by {@code "/"} followed with
+     * three elements, each separated by {@code "/"}, followed by
      * the source file name and the line number of the source line
      * containing the execution point.
      *
@@ -555,5 +555,6 @@ public final class StackTraceElement implements java.io.Serializable {
     private static native void initStackTraceElement(StackTraceElement element,
                                                      StackFrameInfo sfi);
 
+    @java.io.Serial
     private static final long serialVersionUID = 6992337162326171013L;
 }

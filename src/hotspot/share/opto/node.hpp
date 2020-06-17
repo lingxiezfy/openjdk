@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -72,6 +72,7 @@ class EncodePNode;
 class EncodePKlassNode;
 class FastLockNode;
 class FastUnlockNode;
+class HaltNode;
 class IfNode;
 class IfProjNode;
 class IfFalseNode;
@@ -81,8 +82,6 @@ class JVMState;
 class JumpNode;
 class JumpProjNode;
 class LoadNode;
-class LoadBarrierNode;
-class LoadBarrierSlowRegNode;
 class LoadStoreNode;
 class LoadStoreConditionalNode;
 class LockNode;
@@ -146,6 +145,7 @@ class StartNode;
 class State;
 class StoreNode;
 class SubNode;
+class SubTypeCheckNode;
 class Type;
 class TypeNode;
 class UnlockNode;
@@ -392,6 +392,7 @@ protected:
 #ifdef ASSERT
   bool is_dead() const;
 #define is_not_dead(n) ((n) == NULL || !VerifyIterativeGVN || !((n)->is_dead()))
+  bool is_reachable_from_root() const;
 #endif
   // Check whether node has become unreachable
   bool is_unreachable(PhaseIterGVN &igvn) const;
@@ -639,7 +640,6 @@ public:
       DEFINE_CLASS_ID(MemBar,      Multi, 3)
         DEFINE_CLASS_ID(Initialize,       MemBar, 0)
         DEFINE_CLASS_ID(MemBarStoreStore, MemBar, 1)
-      DEFINE_CLASS_ID(LoadBarrier, Multi, 4)
 
     DEFINE_CLASS_ID(Mach,  Node, 1)
       DEFINE_CLASS_ID(MachReturn, Mach, 0)
@@ -675,7 +675,6 @@ public:
       DEFINE_CLASS_ID(EncodeNarrowPtr, Type, 6)
         DEFINE_CLASS_ID(EncodeP, EncodeNarrowPtr, 0)
         DEFINE_CLASS_ID(EncodePKlass, EncodeNarrowPtr, 1)
-      DEFINE_CLASS_ID(LoadBarrierSlowReg, Type, 7)
 
     DEFINE_CLASS_ID(Proj,  Node, 3)
       DEFINE_CLASS_ID(CatchProj, Proj, 0)
@@ -706,6 +705,7 @@ public:
       DEFINE_CLASS_ID(Cmp,   Sub, 0)
         DEFINE_CLASS_ID(FastLock,   Cmp, 0)
         DEFINE_CLASS_ID(FastUnlock, Cmp, 1)
+        DEFINE_CLASS_ID(SubTypeCheck,Cmp, 2)
 
     DEFINE_CLASS_ID(MergeMem, Node, 7)
     DEFINE_CLASS_ID(Bool,     Node, 8)
@@ -715,8 +715,9 @@ public:
     DEFINE_CLASS_ID(Mul,      Node, 12)
     DEFINE_CLASS_ID(Vector,   Node, 13)
     DEFINE_CLASS_ID(ClearArray, Node, 14)
+    DEFINE_CLASS_ID(Halt, Node, 15)
 
-    _max_classes  = ClassMask_ClearArray
+    _max_classes  = ClassMask_Halt
   };
   #undef DEFINE_CLASS_ID
 
@@ -737,25 +738,28 @@ public:
     Flag_is_scheduled                = Flag_is_reduction << 1,
     Flag_has_vector_mask_set         = Flag_is_scheduled << 1,
     Flag_is_expensive                = Flag_has_vector_mask_set << 1,
-    _max_flags = (Flag_is_expensive << 1) - 1 // allow flags combination
+    _last_flag                       = Flag_is_expensive
   };
+
+  class PD;
 
 private:
   jushort _class_id;
   jushort _flags;
 
+  static juint max_flags();
+
 protected:
   // These methods should be called from constructors only.
   void init_class_id(jushort c) {
-    assert(c <= _max_classes, "invalid node class");
     _class_id = c; // cast out const
   }
-  void init_flags(jushort fl) {
-    assert(fl <= _max_flags, "invalid node flag");
+  void init_flags(uint fl) {
+    assert(fl <= max_flags(), "invalid node flag");
     _flags |= fl;
   }
-  void clear_flag(jushort fl) {
-    assert(fl <= _max_flags, "invalid node flag");
+  void clear_flag(uint fl) {
+    assert(fl <= max_flags(), "invalid node flag");
     _flags &= ~fl;
   }
 
@@ -819,6 +823,7 @@ public:
   DEFINE_CLASS_QUERY(EncodePKlass)
   DEFINE_CLASS_QUERY(FastLock)
   DEFINE_CLASS_QUERY(FastUnlock)
+  DEFINE_CLASS_QUERY(Halt)
   DEFINE_CLASS_QUERY(If)
   DEFINE_CLASS_QUERY(RangeCheck)
   DEFINE_CLASS_QUERY(IfProj)
@@ -830,8 +835,6 @@ public:
   DEFINE_CLASS_QUERY(Load)
   DEFINE_CLASS_QUERY(LoadStore)
   DEFINE_CLASS_QUERY(LoadStoreConditional)
-  DEFINE_CLASS_QUERY(LoadBarrier)
-  DEFINE_CLASS_QUERY(LoadBarrierSlowReg)
   DEFINE_CLASS_QUERY(Lock)
   DEFINE_CLASS_QUERY(Loop)
   DEFINE_CLASS_QUERY(Mach)
@@ -875,6 +878,7 @@ public:
   DEFINE_CLASS_QUERY(Start)
   DEFINE_CLASS_QUERY(Store)
   DEFINE_CLASS_QUERY(Sub)
+  DEFINE_CLASS_QUERY(SubTypeCheck)
   DEFINE_CLASS_QUERY(Type)
   DEFINE_CLASS_QUERY(Vector)
   DEFINE_CLASS_QUERY(LoadVector)
@@ -1146,8 +1150,7 @@ public:
   void collect_nodes_out_all_ctrl_boundary(GrowableArray<Node*> *ns) const;
 
   void verify_edges(Unique_Node_List &visited); // Verify bi-directional edges
-  void verify() const;               // Check Def-Use info for my subgraph
-  static void verify_recur(const Node *n, int verify_depth, VectorSet &old_space, VectorSet &new_space);
+  static void verify(Node* n, int verify_depth);
 
   // This call defines a class-unique string used to identify class instances
   virtual const char *Name() const;
@@ -1177,6 +1180,7 @@ public:
   Node* _debug_orig;                   // Original version of this, if any.
   Node*  debug_orig() const            { return _debug_orig; }
   void   set_debug_orig(Node* orig);   // _debug_orig = orig
+  void   dump_orig(outputStream *st, bool print_key = true) const;
 
   int        _hash_lock;               // Barrier to modifications of nodes in the hash table
   void  enter_hash_lock() { ++_hash_lock; assert(_hash_lock < 99, "in too many hash tables?"); }
@@ -1521,9 +1525,9 @@ public:
 
   void remove( Node *n );
   bool member( Node *n ) { return _in_worklist.test(n->_idx) != 0; }
-  VectorSet &member_set(){ return _in_worklist; }
+  VectorSet& member_set(){ return _in_worklist; }
 
-  void push( Node *b ) {
+  void push(Node* b) {
     if( !_in_worklist.test_set(b->_idx) )
       Node_List::push(b);
   }
@@ -1532,24 +1536,32 @@ public:
     Node *b = at(_clock_index);
     map( _clock_index, Node_List::pop());
     if (size() != 0) _clock_index++; // Always start from 0
-    _in_worklist >>= b->_idx;
+    _in_worklist.remove(b->_idx);
     return b;
   }
-  Node *remove( uint i ) {
+  Node *remove(uint i) {
     Node *b = Node_List::at(i);
-    _in_worklist >>= b->_idx;
+    _in_worklist.remove(b->_idx);
     map(i,Node_List::pop());
     return b;
   }
-  void yank( Node *n ) { _in_worklist >>= n->_idx; Node_List::yank(n); }
+  void yank(Node *n) {
+    _in_worklist.remove(n->_idx);
+    Node_List::yank(n);
+  }
   void  clear() {
-    _in_worklist.Clear();        // Discards storage but grows automatically
+    _in_worklist.clear();        // Discards storage but grows automatically
     Node_List::clear();
     _clock_index = 0;
   }
 
   // Used after parsing to remove useless nodes before Iterative GVN
-  void remove_useless_nodes(VectorSet &useful);
+  void remove_useless_nodes(VectorSet& useful);
+
+  bool contains(const Node* n) const {
+    fatal("use faster member() instead");
+    return false;
+  }
 
 #ifndef PRODUCT
   void print_set() const { _in_worklist.print(); }

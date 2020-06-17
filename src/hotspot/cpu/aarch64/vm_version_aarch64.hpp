@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2014, 2019, Red Hat Inc. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2020, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,8 +26,8 @@
 #ifndef CPU_AARCH64_VM_VERSION_AARCH64_HPP
 #define CPU_AARCH64_VM_VERSION_AARCH64_HPP
 
+#include "runtime/abstract_vm_version.hpp"
 #include "runtime/globals_extension.hpp"
-#include "runtime/vm_version.hpp"
 #include "utilities/sizes.hpp"
 
 class VM_Version : public Abstract_VM_Version {
@@ -98,7 +98,6 @@ public:
     CPU_LSE          = (1<<8),
     CPU_STXR_PREFETCH= (1 << 29),
     CPU_A53MAC       = (1 << 30),
-    CPU_DMB_ATOMICS  = (1 << 31),
   };
 
   static int cpu_family()                     { return _cpu; }

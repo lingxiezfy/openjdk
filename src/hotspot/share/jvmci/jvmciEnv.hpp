@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -94,10 +94,12 @@ class JVMCICompileState : public ResourceObj {
   // Cache JVMTI state. Defined as bytes so that reading them from Java
   // via Unsafe is well defined (the C++ type for bool is implementation
   // defined and may not be the same as a Java boolean).
+  uint64_t _jvmti_redefinition_count;
   jbyte  _jvmti_can_hotswap_or_post_breakpoint;
   jbyte  _jvmti_can_access_local_variables;
   jbyte  _jvmti_can_post_on_exceptions;
   jbyte  _jvmti_can_pop_frame;
+  bool   _target_method_is_old;
 
   // Compilation result values.
   bool             _retryable;
@@ -113,10 +115,12 @@ class JVMCICompileState : public ResourceObj {
   CompileTask* task() { return _task; }
 
   bool  jvmti_state_changed() const;
+  uint64_t jvmti_redefinition_count() const          { return  _jvmti_redefinition_count; }
   bool  jvmti_can_hotswap_or_post_breakpoint() const { return  _jvmti_can_hotswap_or_post_breakpoint != 0; }
   bool  jvmti_can_access_local_variables() const     { return  _jvmti_can_access_local_variables != 0; }
   bool  jvmti_can_post_on_exceptions() const         { return  _jvmti_can_post_on_exceptions != 0; }
   bool  jvmti_can_pop_frame() const                  { return  _jvmti_can_pop_frame != 0; }
+  bool  target_method_is_old() const                 { return  _target_method_is_old; }
 
   const char* failure_reason() { return _failure_reason; }
   bool failure_reason_on_C_heap() { return _failure_reason_on_C_heap; }
@@ -260,7 +264,8 @@ public:
   char* as_utf8_string(JVMCIObject str, char* buf, int buflen);
 
   JVMCIObject create_string(Symbol* str, JVMCI_TRAPS) {
-    return create_string(str->as_C_string(), JVMCI_CHECK_(JVMCIObject()));
+    JVMCIObject s = create_string(str->as_C_string(), JVMCI_CHECK_(JVMCIObject()));
+    return s;
   }
 
   JVMCIObject create_string(const char* str, JVMCI_TRAPS);
@@ -322,18 +327,13 @@ public:
 
   void fthrow_error(const char* file, int line, const char* format, ...) ATTRIBUTE_PRINTF(4, 5);
 
-  // Given an instance of HotSpotInstalledCode return the corresponding CodeBlob*
-  CodeBlob* asCodeBlob(JVMCIObject code);
+  // Given an instance of HotSpotInstalledCode return the corresponding CodeBlob*.  The
+  // nmethodLocker is required to keep the CodeBlob alive in the case where it's an nmethod.
+  CodeBlob* get_code_blob(JVMCIObject code, nmethodLocker& locker);
 
-  nmethod* asNmethod(JVMCIObject code) {
-    CodeBlob* cb = asCodeBlob(code);
-    if (cb == NULL) {
-      return NULL;
-    }
-    nmethod* nm = cb->as_nmethod_or_null();
-    guarantee(nm != NULL, "not an nmethod");
-    return nm;
-  }
+  // Given an instance of HotSpotInstalledCode return the corresponding nmethod.  The
+  // nmethodLocker is required to keep the nmethod alive.
+  nmethod* get_nmethod(JVMCIObject code, nmethodLocker& locker);
 
   MethodData* asMethodData(jlong metaspaceMethodData) {
     return (MethodData*) (address) metaspaceMethodData;

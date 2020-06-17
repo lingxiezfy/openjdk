@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -42,6 +42,7 @@
 #include "opto/regmask.hpp"
 #include "opto/rootnode.hpp"
 #include "opto/runtime.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 // Portions of code courtesy of Clifford Click
 
@@ -1280,9 +1281,6 @@ Node *SafePointNode::peek_monitor_obj() const {
 
 // Do we Match on this edge index or not?  Match no edges
 uint SafePointNode::match_edge(uint idx) const {
-  if( !needs_polling_address_input() )
-    return 0;
-
   return (TypeFunc::Parms == idx);
 }
 
@@ -1397,6 +1395,18 @@ void AllocateNode::compute_MemBar_redundancy(ciMethod* initializer)
     _is_allocation_MemBar_redundant = true;
   }
 }
+Node *AllocateNode::make_ideal_mark(PhaseGVN *phase, Node* obj, Node* control, Node* mem) {
+  Node* mark_node = NULL;
+  // For now only enable fast locking for non-array types
+  if (UseBiasedLocking && Opcode() == Op_Allocate) {
+    Node* klass_node = in(AllocateNode::KlassNode);
+    Node* proto_adr = phase->transform(new AddPNode(klass_node, klass_node, phase->MakeConX(in_bytes(Klass::prototype_header_offset()))));
+    mark_node = LoadNode::make(*phase, control, mem, proto_adr, TypeRawPtr::BOTTOM, TypeX_X, TypeX_X->basic_type(), MemNode::unordered);
+  } else {
+    mark_node = phase->MakeConX(markWord::prototype().value());
+  }
+  return mark_node;
+}
 
 //=============================================================================
 Node* AllocateArrayNode::Ideal(PhaseGVN *phase, bool can_reshape) {
@@ -1431,7 +1441,7 @@ Node* AllocateArrayNode::Ideal(PhaseGVN *phase, bool can_reshape) {
         Node *frame = new ParmNode( phase->C->start(), TypeFunc::FramePtr );
         frame = phase->transform(frame);
         // Halt & Catch Fire
-        Node *halt = new HaltNode( nproj, frame );
+        Node* halt = new HaltNode(nproj, frame, "unexpected negative array length");
         phase->C->root()->add_req(halt);
         phase->transform(halt);
 
